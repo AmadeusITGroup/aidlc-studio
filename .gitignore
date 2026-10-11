@@ -1,0 +1,10 @@
+out/
+node_modules/
+*.vsix
+.vscode-test/
+*.js.map
+dist/
+.DS_Store
+Thumbs.db
+.vscode
+my reference.md

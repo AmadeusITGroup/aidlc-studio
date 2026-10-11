@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "AIDLC Setup Detection",
+      "trigger": "SessionStart",
+      "description": "Checks if Amadeus AIDLC is configured in the workspace on session start. Prompts setup if missing, or offers resume if a workflow is in progress.",
+      "action": {
+        "type": "command",
+        "command": "powershell -NoProfile -Command \"$steeringPath = '.kiro/steering/amadeus-aidlc-core.md'; $aidlcDir = 'aidlc'; $stateFiles = Get-ChildItem -Path $aidlcDir -Filter 'aidlc-state.md' -Recurse -ErrorAction SilentlyContinue; if (-not (Test-Path $steeringPath)) { Write-Output 'Amadeus AIDLC is not configured in this workspace. Would you like me to set it up? I will create the required steering files, directory structure, and configure .gitignore. Say \\\"Set up AIDLC\\\" to proceed.'; exit 0 } elseif ($stateFiles) { $latest = $stateFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1; $content = Get-Content $latest.FullName -Raw; if ($content -match 'Current Stage: (.+)') { $stage = $Matches[1] }; if ($content -match 'Current Phase: (.+)') { $phase = $Matches[1] }; if ($content -match 'Stages Completed: (.+)') { $progress = $Matches[1] }; Write-Output \\\"AIDLC workflow detected: $phase > $stage ($progress complete). Say 'Resume AIDLC' to continue where you left off.\\\"; exit 0 } else { exit 0 }\"",
+        "timeout": 10
+      }
+    }
+  ]
+}
