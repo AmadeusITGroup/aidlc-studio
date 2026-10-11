@@ -1,0 +1,419 @@
+{
+  "name": "aidlc-studio",
+  "displayName": "AIDLC Studio",
+  "description": "Accelerate AI-Driven Development Life Cycle workflows in Kiro/VS Code — guided setup, workflow orchestration, progress tracking, and standards enforcement.",
+  "icon": "resources/icon.png",
+  "version": "0.4.0",
+  "publisher": "amadeus",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AmadeusITGroup/aidlc-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AmadeusITGroup/aidlc-studio/issues"
+  },
+  "homepage": "https://github.com/AmadeusITGroup/aidlc-studio#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Snippets",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "aidlc",
+    "ai-dlc",
+    "amadeus",
+    "workflow",
+    "sdlc",
+    "ai-driven",
+    "kiro"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "amadeus-aidlc.setup",
+        "title": "Set Up AIDLC in Workspace",
+        "category": "AIDLC Studio",
+        "icon": "$(gear)"
+      },
+
+      {
+        "command": "amadeus-aidlc.doctor",
+        "title": "/aidlc --doctor — Health Check",
+        "category": "AIDLC Studio",
+        "icon": "$(heart)"
+      },
+      {
+        "command": "amadeus-aidlc.doctorExport",
+        "title": "/aidlc --doctor --export — Export Diagnostic Report",
+        "category": "AIDLC Studio",
+        "icon": "$(export)"
+      },
+      {
+        "command": "amadeus-aidlc.startWorkflow",
+        "title": "/aidlc [description] — Start New Workflow",
+        "category": "AIDLC Studio",
+        "icon": "$(play)"
+      },
+      {
+        "command": "amadeus-aidlc.resumeWorkflow",
+        "title": "/aidlc — Resume Workflow",
+        "category": "AIDLC Studio",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "amadeus-aidlc.showStatus",
+        "title": "/aidlc --status — Show Workflow Status",
+        "category": "AIDLC Studio",
+        "icon": "$(info)"
+      },
+      {
+        "command": "amadeus-aidlc.jumpToStage",
+        "title": "/aidlc --stage — Jump to Stage",
+        "category": "AIDLC Studio",
+        "icon": "$(debug-step-into)"
+      },
+      {
+        "command": "amadeus-aidlc.jumpToPhase",
+        "title": "/aidlc --phase — Jump to Phase",
+        "category": "AIDLC Studio",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "amadeus-aidlc.changeScope",
+        "title": "/aidlc --scope — Change Scope",
+        "category": "AIDLC Studio",
+        "icon": "$(telescope)"
+      },
+      {
+        "command": "amadeus-aidlc.changeDepth",
+        "title": "/aidlc --depth — Change Depth",
+        "category": "AIDLC Studio",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "amadeus-aidlc.changeTestStrategy",
+        "title": "/aidlc --test-strategy — Change Test Strategy",
+        "category": "AIDLC Studio",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "amadeus-aidlc.compose",
+        "title": "/aidlc compose — Adaptive Composer",
+        "category": "AIDLC Studio",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "amadeus-aidlc.switchIntent",
+        "title": "/aidlc intent — Switch Intent",
+        "category": "AIDLC Studio",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "amadeus-aidlc.switchSpace",
+        "title": "/aidlc space — Switch Space",
+        "category": "AIDLC Studio",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "amadeus-aidlc.knowledge",
+        "title": "/aidlc knowledge — Manage Knowledge Documents",
+        "category": "AIDLC Studio",
+        "icon": "$(library)"
+      },
+      {
+        "command": "amadeus-aidlc.pluginList",
+        "title": "/aidlc plugin list — List Plugins",
+        "category": "AIDLC Studio",
+        "icon": "$(extensions)"
+      },
+      {
+        "command": "amadeus-aidlc.version",
+        "title": "/aidlc --version — Framework Version",
+        "category": "AIDLC Studio",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "amadeus-aidlc.openReference",
+        "title": "Open Quick Reference",
+        "category": "AIDLC Studio",
+        "icon": "$(book)"
+      },
+      {
+        "command": "amadeus-aidlc.refreshViews",
+        "title": "Refresh",
+        "category": "AIDLC Studio",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "amadeus-aidlc.installBun",
+        "title": "Install bun",
+        "category": "AIDLC Studio",
+        "icon": "$(package)"
+      },
+      {
+        "command": "amadeus-aidlc.checkForUpdates",
+        "title": "Check for Updates",
+        "category": "AIDLC Studio",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "amadeus-aidlc.updateRules",
+        "title": "Update AIDLC Rules",
+        "category": "AIDLC Studio",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "amadeus-aidlc.approveStage",
+        "title": "Approve Stage",
+        "category": "AIDLC Studio",
+        "icon": "$(check)"
+      },
+      {
+        "command": "amadeus-aidlc.requestChanges",
+        "title": "Request Changes",
+        "category": "AIDLC Studio",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "amadeus-aidlc.skipStage",
+        "title": "Skip Stage",
+        "category": "AIDLC Studio",
+        "icon": "$(debug-step-over)"
+      },
+      {
+        "command": "amadeus-aidlc.reviewArtifact",
+        "title": "Review Artifact",
+        "category": "AIDLC Studio",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "amadeus-aidlc.openAnalytics",
+        "title": "Open Analytics Dashboard",
+        "category": "AIDLC Studio",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "amadeus-aidlc.openIntentAnalytics",
+        "title": "View Intent Analytics",
+        "category": "AIDLC Studio",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "amadeus-aidlc.openDocs",
+        "title": "Open Documentation",
+        "category": "AIDLC Studio",
+        "icon": "$(book)"
+      },
+      {
+        "command": "amadeus-aidlc.openWelcome",
+        "title": "Welcome",
+        "category": "AIDLC Studio",
+        "icon": "$(home)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "amadeus-aidlc",
+          "title": "AIDLC Studio",
+          "icon": "resources/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "amadeus-aidlc": [
+        {
+          "id": "amadeus-aidlc.system",
+          "name": "System",
+          "type": "tree",
+          "visibility": "visible"
+        },
+        {
+          "id": "amadeus-aidlc.workflowProgress",
+          "name": "Workflow Progress",
+          "type": "tree"
+        },
+        {
+          "id": "amadeus-aidlc.stages",
+          "name": "Stages",
+          "type": "tree"
+        },
+        {
+          "id": "amadeus-aidlc.artifacts",
+          "name": "Artifacts",
+          "type": "tree"
+        },
+        {
+          "id": "amadeus-aidlc.intents",
+          "name": "Intents",
+          "type": "tree"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "amadeus-aidlc.workflowProgress",
+        "when": "amadeus-aidlc.setupDone",
+        "contents": "No AIDLC workflow is active.\n[Start New Workflow](command:amadeus-aidlc.startWorkflow)"
+      },
+      {
+        "view": "amadeus-aidlc.workflowProgress",
+        "when": "!amadeus-aidlc.setupDone",
+        "contents": "Please set up AIDLC to continue.\n[Set Up AIDLC](command:amadeus-aidlc.setup)\n\nUse the System panel above to check status."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "amadeus-aidlc.refreshViews",
+          "when": "view =~ /amadeus-aidlc/",
+          "group": "navigation"
+        },
+        {
+          "command": "amadeus-aidlc.startWorkflow",
+          "when": "view == amadeus-aidlc.workflowProgress",
+          "group": "navigation"
+        },
+        {
+          "command": "amadeus-aidlc.openAnalytics",
+          "when": "view == amadeus-aidlc.system",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "amadeus-aidlc.approveStage",
+          "when": "view == amadeus-aidlc.stages && viewItem == stage-awaiting-approval",
+          "group": "inline@1"
+        },
+        {
+          "command": "amadeus-aidlc.reviewArtifact",
+          "when": "view == amadeus-aidlc.stages && viewItem == stage-awaiting-approval",
+          "group": "inline@2"
+        },
+        {
+          "command": "amadeus-aidlc.skipStage",
+          "when": "view == amadeus-aidlc.stages && viewItem == stage-awaiting-approval",
+          "group": "inline@3"
+        },
+        {
+          "command": "amadeus-aidlc.updateRules",
+          "when": "view == amadeus-aidlc.system && viewItem == system-update",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "amadeus-aidlc.refreshViews",
+          "when": "false"
+        },
+        {
+          "command": "amadeus-aidlc.approveStage",
+          "when": "amadeus-aidlc.hasAwaitingApproval"
+        },
+        {
+          "command": "amadeus-aidlc.requestChanges",
+          "when": "amadeus-aidlc.hasAwaitingApproval"
+        },
+        {
+          "command": "amadeus-aidlc.skipStage",
+          "when": "amadeus-aidlc.hasAwaitingApproval"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AIDLC Studio",
+      "properties": {
+        "amadeus-aidlc.rulesSource": {
+          "type": "string",
+          "default": "",
+          "description": "Advanced: override the AIDLC repo URL used during setup. Leave empty to pick a variant when running Setup."
+        },
+        "amadeus-aidlc.defaultScope": {
+          "type": "string",
+          "default": "feature",
+          "enum": [
+            "enterprise",
+            "feature",
+            "mvp",
+            "poc",
+            "bugfix",
+            "refactor",
+            "spike",
+            "migration",
+            "integration",
+            "documentation",
+            "express"
+          ],
+          "description": "Default scope for new workflows."
+        },
+        "amadeus-aidlc.defaultDepth": {
+          "type": "string",
+          "default": "standard",
+          "enum": ["minimal", "standard", "comprehensive"],
+          "description": "Default depth level for new workflows."
+        },
+        "amadeus-aidlc.defaultTestStrategy": {
+          "type": "string",
+          "default": "standard",
+          "enum": ["minimal", "standard", "comprehensive"],
+          "description": "Default test strategy for new workflows."
+        },
+        "amadeus-aidlc.autoDetectSetup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically prompt AIDLC setup when opening a workspace without configuration."
+        },
+        "amadeus-aidlc.showProgressNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification toasts on stage transitions."
+        },
+        "amadeus-aidlc.updateRepoUrl": {
+          "type": "string",
+          "default": "https://github.com/Amadeus-xDLC/amadeus-aidlc",
+          "description": "Git repository URL used to check for and pull AIDLC rule updates."
+        },
+        "amadeus-aidlc.autoCheckUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically check for AIDLC updates on startup."
+        },
+        "amadeus-aidlc.showWelcomeOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the welcome page when the extension activates for the first time."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

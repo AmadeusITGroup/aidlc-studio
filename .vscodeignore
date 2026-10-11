@@ -1,0 +1,22 @@
+# Development files
+.vscode/**
+.vscode-test/**
+.github/**
+.kiro/**
+.eslintrc.json
+.gitignore
+src/**
+scripts/**
+node_modules/**
+tsconfig.json
+vitest.config.ts
+**/*.map
+**/*.ts
+!out/**/*.js
+
+# Documentation / planning files not needed in extension
+TASKS.md
+PRODUCT_FEATURES.md
+INSTALL.md
+PRESENTATION_CONTENT.md
+my reference.md
