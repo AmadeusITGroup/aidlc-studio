@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Shell } from './shell';
-import { AidlcVariant, getDefaultVariant } from './variants';
+import { AidlcVariant, getDefaultVariant, resolveHarness } from './variants';
+import {
+  aidlcBinaryCandidates,
+  buildNativeInstallCommand,
+  buildRepoInstallerCommand,
+} from './installCommands';
 
 export class RuleLoader {
   private clonedRepoPath: string | null = null;
@@ -24,9 +29,12 @@ export class RuleLoader {
   }
 
   /**
-   * Install the AWS variant using its native release installer.
-   * Downloads install.sh / install.ps1, runs it, then `aidlc config --harness kiro-ide`.
-   * The installed runtime needs neither git nor bun.
+   * Install the AWS variant using its official native release installer.
+   * Issues the upstream one-liner directly (no temp-file download/run dance):
+   * Windows `irm <url> | iex`, Unix `curl -fsSL <url> | sh`. Then runs
+   * `aidlc config --harness <harness>` where the harness is chosen by the host
+   * IDE (kiro-ide in Kiro, copilot in VS Code). The installed runtime needs
+   * neither git nor bun.
    */
   async installViaNativeInstaller(workspaceUri: vscode.Uri): Promise<void> {
     const variant = this.activeVariant;
@@ -34,68 +42,69 @@ export class RuleLoader {
       throw new Error(`Variant ${variant.label} has no install script configured.`);
     }
 
-    const isWindows = process.platform === 'win32';
-    const scriptUrl = isWindows ? variant.installScriptUrl.windows : variant.installScriptUrl.unix;
-    const tmpBase = path.join(process.env.TEMP ?? process.env.TMPDIR ?? '/tmp', 'aidlc-native-install');
+    const scriptUrl = process.platform === 'win32'
+      ? variant.installScriptUrl.windows
+      : variant.installScriptUrl.unix;
 
-    await Shell.removeDir(tmpBase);
-    await Shell.ensureDir(tmpBase);
+    const installCmd = buildNativeInstallCommand(process.platform, scriptUrl);
+    this.outputChannel?.appendLine(`Running official native installer: ${installCmd}`);
+    await Shell.run(installCmd, { timeout: 180000, cwd: workspaceUri.fsPath });
 
-    const scriptName = isWindows ? 'install.ps1' : 'install.sh';
-    const scriptPath = path.join(tmpBase, scriptName);
-
-    this.outputChannel?.appendLine(`Downloading installer: ${scriptUrl}`);
-    await Shell.run(`curl -fsSL "${scriptUrl}" -o "${scriptPath}"`, { timeout: 60000 });
-
-    this.outputChannel?.appendLine('Running native installer...');
-    if (isWindows) {
-      await Shell.run(
-        `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
-        { timeout: 180000, cwd: workspaceUri.fsPath }
+    // Configure the single harness that matches the host IDE, clamped to what
+    // this variant actually ships.
+    const { harness, fellBack } = resolveHarness(variant);
+    if (fellBack) {
+      this.outputChannel?.appendLine(
+        `Note: ${variant.label} does not provide a harness for this IDE; installing "${harness}" instead.`
       );
-    } else {
-      await Shell.run(`sh "${scriptPath}"`, { timeout: 180000, cwd: workspaceUri.fsPath });
     }
-
-    await Shell.removeDir(tmpBase);
-
-    // Project the Kiro IDE shell into this workspace.
-    // The installer puts an `aidlc` binary on PATH; use it to configure the harness.
-    this.outputChannel?.appendLine('Configuring harness (aidlc config --harness kiro-ide)...');
-    try {
-      await Shell.run('aidlc config --harness kiro-ide', {
-        timeout: 60000,
-        cwd: workspaceUri.fsPath,
-      });
-    } catch (e) {
-      // The binary may not be on PATH in this process yet — try common locations
-      const msg = e instanceof Error ? e.message : String(e);
-      this.outputChannel?.appendLine(`aidlc config via PATH failed (${msg}); trying known locations...`);
-      await this.runAidlcConfigFallback(workspaceUri);
-    }
+    this.outputChannel?.appendLine(`Configuring harness (aidlc config --harness ${harness})...`);
+    await this.runAidlcConfig(workspaceUri, harness);
   }
 
-  private async runAidlcConfigFallback(workspaceUri: vscode.Uri): Promise<void> {
-    const isWindows = process.platform === 'win32';
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
-    const candidates = isWindows
-      ? [path.join(home, '.aidlc', 'bin', 'aidlc.exe'), path.join(home, 'AppData', 'Local', 'aidlc', 'aidlc.exe')]
-      : [path.join(home, '.aidlc', 'bin', 'aidlc'), path.join(home, '.local', 'bin', 'aidlc'), '/usr/local/bin/aidlc'];
+  /**
+   * Run `aidlc config --harness <harness>`. The freshly-installed binary is
+   * usually not yet on this process's PATH, so resolve it by its known install
+   * location FIRST (absolute path), falling back to a bare-PATH `aidlc` only as
+   * a secondary attempt. If nothing works, surface a clear manual-step error.
+   */
+  private async runAidlcConfig(workspaceUri: vscode.Uri, harness: string): Promise<void> {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+    const candidates = aidlcBinaryCandidates(process.platform, home);
 
     for (const bin of candidates) {
       try {
-        await Shell.run(`"${bin}" config --harness kiro-ide`, {
+        await vscode.workspace.fs.stat(vscode.Uri.file(bin));
+      } catch {
+        continue; // not installed here — try next known location
+      }
+      try {
+        await Shell.run(`"${bin}" config --harness ${harness}`, {
           timeout: 60000,
           cwd: workspaceUri.fsPath,
         });
         this.outputChannel?.appendLine(`Configured harness using ${bin}`);
         return;
       } catch {
-        // try next
+        // exists but failed to run — try the next candidate / bare PATH
       }
     }
+
+    // Secondary attempt: bare `aidlc` on PATH.
+    try {
+      await Shell.run(`aidlc config --harness ${harness}`, {
+        timeout: 60000,
+        cwd: workspaceUri.fsPath,
+      });
+      this.outputChannel?.appendLine('Configured harness using aidlc on PATH');
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.outputChannel?.appendLine(`aidlc config via PATH failed (${msg}).`);
+    }
+
     throw new Error(
-      'AIDLC installed but "aidlc config --harness kiro-ide" could not run. ' +
+      `AIDLC installed but "aidlc config --harness ${harness}" could not run. ` +
       'Open a new terminal and run it manually in your project, then reload.'
     );
   }
@@ -171,11 +180,80 @@ export class RuleLoader {
   }
 
   /**
-   * Step 3: Copy dist/kiro-ide/ into the workspace.
+   * Install the Amadeus variant using its OFFICIAL one-click installer.
+   * Clones the (SSO) repo via cloneAidlcRepo() — reusing its auth-failure /
+   * not-found error handling and temp-dir cleanup — then runs the shipped
+   * scripts/install-aidlc.ps1 (Windows) / scripts/install-aidlc.sh (Unix) with
+   * the workspace as target and the resolved harness. If the installer script
+   * is absent, or the invocation fails in a way indicating a missing/unsupported
+   * script, falls back to the legacy manual-copy path (installFramework) so
+   * install still succeeds. Always cleans up the temp clone.
+   */
+  async installViaRepoInstaller(workspaceUri: vscode.Uri): Promise<void> {
+    const variant = this.activeVariant;
+    await this.cloneAidlcRepo();
+
+    const clonePath = this.clonedRepoPath;
+    if (!clonePath) {
+      throw new Error('Repository not cloned. Run cloneAidlcRepo() first.');
+    }
+
+    const scriptDir = path.join(clonePath, 'scripts');
+    const scriptName = process.platform === 'win32' ? 'install-aidlc.ps1' : 'install-aidlc.sh';
+    const scriptPath = path.join(scriptDir, scriptName);
+
+    let scriptPresent = true;
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(scriptPath));
+    } catch {
+      scriptPresent = false;
+    }
+
+    if (scriptPresent) {
+      const { harness, fellBack } = resolveHarness(variant);
+      if (fellBack) {
+        this.outputChannel?.appendLine(
+          `Note: ${variant.label} does not provide a harness for this IDE; installing "${harness}" instead.`
+        );
+      }
+      const installCmd = buildRepoInstallerCommand(
+        process.platform,
+        scriptDir,
+        workspaceUri.fsPath,
+        harness
+      );
+      try {
+        this.outputChannel?.appendLine(`Using official one-click installer: ${installCmd}`);
+        await Shell.run(installCmd, { timeout: 600000, cwd: workspaceUri.fsPath });
+        await Shell.removeDir(clonePath);
+        this.clonedRepoPath = null;
+        return;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.outputChannel?.appendLine(
+          `Official installer failed (${msg}) — falling back to manual copy.`
+        );
+        // Fall through to the manual-copy path; clone is still available.
+      }
+    } else {
+      this.outputChannel?.appendLine('Installer script not found — falling back to manual copy.');
+    }
+
+    // Fallback: legacy manual-copy. installFramework cleans up the clone itself.
+    await this.installFramework(workspaceUri);
+  }
+
+  /**
+   * Step 3: Copy the harness-specific dist/<harness>/ into the workspace.
+   * This is the Amadeus/custom (git-clone-copy) path, which matches the
+   * Amadeus README's manual install steps exactly:
    *   mkdir -p your-project/.kiro your-project/aidlc
-   *   cp -R dist/kiro-ide/.kiro/. your-project/.kiro/
-   *   cp -R dist/kiro-ide/aidlc/. your-project/aidlc/
-   *   cp dist/kiro-ide/AGENTS.md your-project/AGENTS.md
+   *   cp -R dist/<harness>/.kiro/. your-project/.kiro/
+   *   cp -R dist/<harness>/aidlc/. your-project/aidlc/
+   *   cp dist/<harness>/AGENTS.md your-project/AGENTS.md
+   * The harness is resolved by resolveHarness(): the host IDE's harness clamped
+   * to what the variant ships. Amadeus is Kiro-only (kiro-ide / kiro), so in
+   * VS Code it falls back to kiro-ide — there is no copilot harness to copy.
    */
   async installFramework(workspaceUri: vscode.Uri): Promise<void> {
     if (!this.clonedRepoPath) {
@@ -183,8 +261,21 @@ export class RuleLoader {
     }
 
     const variant = this.activeVariant;
-    const distDir = path.join(this.clonedRepoPath, ...variant.distPath.split('/'));
+    // Derive the dist subfolder from the host IDE's harness, clamped to what
+    // this variant ships (e.g. Amadeus is Kiro-only, so VS Code falls back to
+    // kiro-ide rather than a non-existent dist/copilot). variant.distPath
+    // (e.g. "dist/kiro-ide") provides the base dir; we swap the leaf.
+    const { harness, fellBack } = resolveHarness(variant);
+    if (fellBack) {
+      this.outputChannel?.appendLine(
+        `Note: ${variant.label} does not provide a harness for this IDE; installing "${harness}" instead.`
+      );
+    }
+    const distBase = path.dirname(variant.distPath); // "dist"
+    const distRel = `${distBase}/${harness}`;
+    const distDir = path.join(this.clonedRepoPath, ...distRel.split('/'));
     const workspacePath = workspaceUri.fsPath;
+    this.outputChannel?.appendLine(`Installing harness "${harness}" from ${distRel}/`);
 
     // Verify the dist dir exists
     try {
@@ -193,7 +284,8 @@ export class RuleLoader {
       await Shell.removeDir(this.clonedRepoPath);
       this.clonedRepoPath = null;
       throw new Error(
-        `${variant.distPath}/ not found in the cloned repo. The repository structure may have changed.`
+        `${distRel}/ not found in the cloned repo. This variant may not ship a ` +
+        `"${harness}" harness, or the repository structure may have changed.`
       );
     }
 
