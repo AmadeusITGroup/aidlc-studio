@@ -4,7 +4,7 @@
   "description": "Accelerate AI-Driven Development Life Cycle workflows in Kiro/VS Code — guided setup, workflow orchestration, progress tracking, and standards enforcement.",
   "icon": "resources/icon.png",
   "version": "0.4.0",
-  "publisher": "amadeus",
+  "publisher": "AmadeusITGroup",
   "license": "MIT",
   "repository": {
     "type": "git",
