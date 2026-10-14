@@ -128,6 +128,11 @@ jobs:
 
       - name: Security scan (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@master
+        # Keep Trivy's ~1.5 GB vulnerability DB out of the workspace. By default
+        # it caches into ./.cache/trivy, which the packaging step below would
+        # otherwise sweep into the VSIX and blow past Open VSX's size limit.
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/.trivycache
         with:
           scan-type: 'fs'
           scan-ref: '.'

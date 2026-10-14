@@ -4,6 +4,8 @@
 .github/**
 .kiro/**
 .agents/**
+.cache/**
+**/.cache/**
 .eslintrc.json
 .gitignore
 src/**
