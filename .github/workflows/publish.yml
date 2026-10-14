@@ -1,0 +1,274 @@
+name: Publish
+
+# GitHub Releases are created by ci-cd.yml on ANY version bump. This workflow
+# reacts to a published release and pushes to the VS Code Marketplace and Open
+# VSX ONLY when the MAJOR or MINOR part of X.Y.Z changed since the previous
+# release. A patch-only bump (just Z) stays on GitHub Releases and is skipped
+# here. A manual workflow_dispatch can force a publish regardless.
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 1.2.0)'
+        required: true
+        type: string
+      target_registries:
+        description: 'Comma-separated: vscode-marketplace,open-vsx'
+        required: false
+        type: string
+        default: 'vscode-marketplace,open-vsx'
+
+# Least privilege. id-token needed for SLSA provenance.
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  EXTENSION_NAME: 'aidlc-studio'
+  PUBLISHER: 'AmadeusITGroup'
+
+jobs:
+  # Validate the release, decide whether the marketplaces should publish
+  # (minor/major gate), build the VSIX, and emit integrity + provenance inputs.
+  prepare:
+    name: Prepare & Validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish_marketplaces: ${{ steps.gate.outputs.publish_marketplaces }}
+      subjects: ${{ steps.package.outputs.subjects }}
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      # Only tags are needed for the X.Y marketplace gate, not full history.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          # Strip optional leading 'v'
+          VERSION="${VERSION#v}"
+          # Validate X.Y.Z (optionally with a prerelease suffix)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Decide marketplace publish gate (X or Y changed)
+        id: gate
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CUR_MAJOR="${VERSION%%.*}"
+          CUR_MINOR="$(echo "$VERSION" | cut -d. -f2)"
+
+          # Manual dispatch always publishes to the requested registries.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — forcing marketplace publish"
+            echo "publish_marketplaces=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Highest released version tag that is NOT the current one. Tags are
+          # created only for shipped releases, so the newest other tag is the
+          # previous release we compare against.
+          PREV="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' \
+            | sed 's/^v//' \
+            | grep -vx "${VERSION}" \
+            | sort -V \
+            | tail -n1)"
+
+          if [ -z "$PREV" ]; then
+            echo "No prior version tag — first release publishes to marketplaces"
+            echo "publish_marketplaces=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PREV_MAJOR="${PREV%%.*}"
+          PREV_MINOR="$(echo "$PREV" | cut -d. -f2)"
+          if [ "$CUR_MAJOR" != "$PREV_MAJOR" ] || [ "$CUR_MINOR" != "$PREV_MINOR" ]; then
+            echo "Minor/major change ($PREV -> $VERSION) — marketplaces will publish"
+            echo "publish_marketplaces=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Patch-only change ($PREV -> $VERSION) — skipping marketplaces"
+            echo "publish_marketplaces=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync package.json version to the release
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Security scan (fail on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+          skip-dirs: 'node_modules,out'
+
+      - name: Package VSIX
+        id: package
+        run: |
+          VSIX="${EXTENSION_NAME}-${{ steps.version.outputs.version }}.vsix"
+          echo "y" | npx @vscode/vsce package --no-dependencies --allow-missing-repository --out "$VSIX"
+          sha256sum "$VSIX" > checksums.txt
+          SHA256="$(sha256sum "$VSIX" | cut -d' ' -f1)"
+          echo "VSIX: $VSIX  SHA256: $SHA256"
+          # base64 subject line for SLSA provenance
+          SUBJECTS="$(echo "${SHA256}  ${VSIX}" | base64 -w0)"
+          echo "subjects=$SUBJECTS" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-package
+          path: |
+            ${{ env.EXTENSION_NAME }}-${{ steps.version.outputs.version }}.vsix
+            checksums.txt
+          retention-days: 30
+
+  # SLSA provenance attestation for the built VSIX.
+  provenance:
+    name: SLSA Provenance
+    needs: prepare
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.prepare.outputs.subjects }}
+      upload-assets: true
+
+  publish-marketplace:
+    name: VS Code Marketplace
+    needs: prepare
+    if: >
+      needs.prepare.outputs.publish_marketplaces == 'true'
+      && (github.event_name == 'release'
+          || contains(github.event.inputs.target_registries, 'vscode-marketplace'))
+    runs-on: ubuntu-latest
+    environment:
+      name: vscode-marketplace
+      url: https://marketplace.visualstudio.com/items?itemName=${{ env.PUBLISHER }}.${{ env.EXTENSION_NAME }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-package
+
+      - name: Verify integrity
+        run: sha256sum -c checksums.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_TOKEN }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCODE_MARKETPLACE_TOKEN secret not configured"
+            exit 1
+          fi
+          npx @vscode/vsce publish --packagePath "${EXTENSION_NAME}-${{ needs.prepare.outputs.version }}.vsix"
+
+  publish-openvsx:
+    name: Open VSX (Kiro)
+    needs: prepare
+    if: >
+      needs.prepare.outputs.publish_marketplaces == 'true'
+      && (github.event_name == 'release'
+          || contains(github.event.inputs.target_registries, 'open-vsx'))
+    runs-on: ubuntu-latest
+    environment:
+      name: open-vsx
+      url: https://open-vsx.org/extension/${{ env.PUBLISHER }}/${{ env.EXTENSION_NAME }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-package
+
+      - name: Verify integrity
+        run: sha256sum -c checksums.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OPEN_VSX_TOKEN }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::error::OPEN_VSX_TOKEN secret not configured"
+            exit 1
+          fi
+          npx ovsx publish "${EXTENSION_NAME}-${{ needs.prepare.outputs.version }}.vsix" -p "$OVSX_PAT"
+
+  summary:
+    name: Publish Summary
+    needs: [prepare, publish-marketplace, publish-openvsx]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        run: |
+          {
+            echo "## AIDLC Studio — Publish Summary"
+            echo ""
+            echo "- Version: ${{ needs.prepare.outputs.version }}"
+            echo "- Marketplace gate (X or Y changed): ${{ needs.prepare.outputs.publish_marketplaces }}"
+            echo "- VS Code Marketplace: ${{ needs.publish-marketplace.result }}"
+            echo "- Open VSX: ${{ needs.publish-openvsx.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"

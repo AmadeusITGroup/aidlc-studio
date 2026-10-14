@@ -1,0 +1,105 @@
+name: npm audit PR comment
+description: >
+  Generates a PR comment body with pre-existing npm audit findings and uploads it as an
+  artifact for the post-pr-comment workflow to post. Informational only — never fails.
+  Pair with dependency-review-action for gating.
+  Note: call at most once per workflow run (one artifact upload per run).
+
+inputs:
+  working-directory:
+    description: Directory containing package.json / package-lock.json
+    required: false
+    default: '.'
+  audit-flags:
+    description: Extra flags forwarded to npm audit (e.g. --omit=dev)
+    required: false
+    default: '--omit=dev'
+  min-severity:
+    description: Minimum severity to include (info, low, moderate, high, critical)
+    required: false
+    default: moderate
+  label:
+    description: Short label shown in the comment header (e.g. "extension")
+    required: false
+    default: 'extension'
+
+runs:
+  using: composite
+  steps:
+    - name: Collect audit findings and write artifact file
+      uses: actions/github-script@v7
+      env:
+        AUDIT_FLAGS: ${{ inputs.audit-flags }}
+        MIN_SEVERITY: ${{ inputs.min-severity }}
+        WORK_DIR: ${{ inputs.working-directory }}
+        LABEL: ${{ inputs.label }}
+      with:
+        script: |
+          const { execSync } = require('child_process')
+          const fs = require('fs')
+
+          let auditOutput
+          try {
+            auditOutput = execSync(
+              `npm audit --json ${process.env.AUDIT_FLAGS}`,
+              { cwd: process.env.WORK_DIR, stdio: ['pipe', 'pipe', 'pipe'] }
+            ).toString()
+          } catch (e) {
+            // npm audit exits non-zero when vulnerabilities exist; stdout still holds JSON.
+            auditOutput = e.stdout?.toString() ?? '{}'
+          }
+
+          const SEVERITY_RANK = ['info', 'low', 'moderate', 'high', 'critical']
+          const minSeverity = (process.env.MIN_SEVERITY || 'moderate').toLowerCase()
+          const minRank = Math.max(0, SEVERITY_RANK.indexOf(minSeverity))
+
+          let report
+          try {
+            const json = JSON.parse(auditOutput)
+
+            let rawAdvisories = []
+            if (json.advisories) {
+              rawAdvisories = Object.values(json.advisories)
+            } else if (json.vulnerabilities) {
+              rawAdvisories = Object.values(json.vulnerabilities)
+                .flatMap(v => (Array.isArray(v.via) ? v.via : v.via ? [v.via] : []))
+            }
+
+            const advisories = new Map(
+              rawAdvisories
+                .filter(v => v && typeof v === 'object' && v.url && SEVERITY_RANK.indexOf(v.severity) >= minRank)
+                .map(v => [v.url, v])
+            )
+
+            const rows = [...advisories.values()].map(a =>
+              `| ${a.severity} | [${a.title}](${a.url}) | \`${a.module_name ?? a.name}\` |`
+            )
+
+            report = rows.length === 0
+              ? `✅ No vulnerabilities found (severity ≥ ${minSeverity}).`
+              : [
+                  `⚠️ **Pre-existing vulnerabilities in \`${process.env.LABEL}\` (severity ≥ ${minSeverity})** — not introduced by this PR, informational only.`,
+                  '',
+                  `| Severity | Advisory | Package |`,
+                  `|----------|----------|---------|`,
+                  ...rows,
+                  '',
+                  `> These were already present on the base branch. Use \`npm audit fix\` or upgrade dependencies to resolve them.`,
+                ].join('\n')
+          } catch (_) {
+            report = `⚠️ Could not parse audit output for \`${process.env.LABEL}\`.`
+          }
+
+          const marker = `<!-- npm-audit-comment:${process.env.LABEL} -->`
+          const body = `${marker}\n### npm audit — \`${process.env.LABEL}\`\n\n${report}`
+
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/comment.md`, body)
+
+    - name: Upload audit comment artifact
+      uses: actions/upload-artifact@v4
+      # Informational only — upload failure must never fail the calling job.
+      continue-on-error: true
+      with:
+        name: npm-audit-comment
+        path: ${{ runner.temp }}/comment.md
+        retention-days: 1
