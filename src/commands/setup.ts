@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { RuleLoader } from '../services/ruleLoader';
+import { RuleLoader, RepoAccessError } from '../services/ruleLoader';
 import { BunInstaller } from '../services/bunInstaller';
 import { AidlcCli } from '../services/aidlcCli';
 import { AIDLC_VARIANTS, getVariant } from '../services/variants';
@@ -80,17 +80,24 @@ export class SetupCommand {
           }
           if (token.isCancellationRequested) { return; }
 
-          // Step 2+3: Install the framework (method depends on variant)
-          if (variant.installMethod === 'native-installer') {
-            progress.report({ message: 'Step 2/4: Running native installer...', increment: 50 });
-            await this.ruleLoader.installViaNativeInstaller(workspaceFolder.uri);
-          } else {
-            progress.report({ message: 'Step 2/4: Cloning AIDLC repo...', increment: 20 });
-            await this.ruleLoader.cloneAidlcRepo();
-            if (token.isCancellationRequested) { return; }
+          // Step 2+3: Install the framework via the variant's OFFICIAL method.
+          switch (variant.installMethod) {
+            case 'native-installer':
+              progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
+              await this.ruleLoader.installViaNativeInstaller(workspaceFolder.uri);
+              break;
+            case 'repo-installer':
+              progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
+              await this.ruleLoader.installViaRepoInstaller(workspaceFolder.uri);
+              break;
+            default: // 'git-clone-copy' (custom / legacy manual copy)
+              progress.report({ message: 'Step 2/4: Cloning AIDLC repo...', increment: 20 });
+              await this.ruleLoader.cloneAidlcRepo();
+              if (token.isCancellationRequested) { return; }
 
-            progress.report({ message: 'Step 3/4: Installing framework into workspace...', increment: 30 });
-            await this.ruleLoader.installFramework(workspaceFolder.uri);
+              progress.report({ message: 'Step 3/4: Installing framework into workspace...', increment: 30 });
+              await this.ruleLoader.installFramework(workspaceFolder.uri);
+              break;
           }
           if (token.isCancellationRequested) { return; }
 
@@ -128,6 +135,20 @@ export class SetupCommand {
 
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+
+      // No access to a private/SSO variant repo (e.g. a public user picking the
+      // Amadeus internal fork). Show a clear "you don't have access" message
+      // instead of raw git output, and log the technical detail for debugging.
+      if (error instanceof RepoAccessError) {
+        this.outputChannel.appendLine(`\nSetup failed: ${message}`);
+        vscode.window.showErrorMessage(
+          `You don't have access to "${error.variantLabel}". This version is restricted — ` +
+          `make sure you're on the required network and signed in, or choose the open-source version instead.`
+        );
+        await this.onStatusChange();
+        return;
+      }
+
       this.outputChannel.appendLine(`\nSetup failed: ${message}`);
       vscode.window.showErrorMessage(`AIDLC setup failed: ${message}`);
       // Still refresh so any partial state is reflected
@@ -151,10 +172,16 @@ export class SetupCommand {
   private async runDoctor(workspaceUri: vscode.Uri): Promise<void> {
     const cli = new AidlcCli(this.outputChannel, workspaceUri);
 
-    this.outputChannel.appendLine('');
-    this.outputChannel.appendLine('--- /aidlc --doctor ---');
+    // Run the doctor command that matches how this variant installs, derived
+    // directly from the variant's doctorMode:
+    //  - 'native' (AWS) -> `aidlc doctor`
+    //  - 'bun-tool' (Amadeus/custom) -> `bun .kiro/tools/aidlc-utility.ts doctor`
+    const mode = this.ruleLoader.variant.doctorMode;
 
-    const result = await cli.doctor();
+    this.outputChannel.appendLine('');
+    this.outputChannel.appendLine('--- AI-DLC doctor ---');
+
+    const result = await cli.doctor(mode);
 
     if (result.passed) {
       const passCount = result.checks.filter((c) => c.passed).length;

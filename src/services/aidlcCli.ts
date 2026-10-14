@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import * as fs from 'fs';
+import { aidlcBinaryCandidates } from './installCommands';
 
 const execAsync = promisify(exec);
 
@@ -50,11 +52,25 @@ export class AidlcCli {
   }
 
   /**
-   * Run /aidlc --doctor health check.
-   * Validates prerequisites, hook presence, project structure, workspace shell, etc.
+   * Run the AI-DLC doctor health check, using the command that matches how the
+   * framework was installed — per each variant's official README:
+   *
+   *  - AWS native install  -> `aidlc doctor` (native binary; a native install
+   *    runs everything through `aidlc` and does not call bun).
+   *  - Amadeus / custom clone-copy -> `bun .kiro/tools/aidlc-utility.ts doctor`
+   *    (there is no `aidlc` binary; the Bun tool is the entry point).
+   *
+   * When `mode` is omitted (e.g. the standalone Doctor command, which doesn't
+   * know the variant) we auto-detect: if the workspace has the Bun tool
+   * (.kiro/tools/aidlc-utility.ts) we use it; otherwise we use `aidlc doctor`.
    */
-  async doctor(): Promise<DoctorResult> {
-    const result = await this.runTool('aidlc-utility.ts', ['doctor']);
+  async doctor(mode: 'native' | 'bun-tool' | 'auto' = 'auto'): Promise<DoctorResult> {
+    const useNative = mode === 'native'
+      || (mode === 'auto' && !(await this.hasBunTool()));
+
+    const result = useNative
+      ? await this.runNativeAidlc(['doctor'])
+      : await this.runTool('aidlc-utility.ts', ['doctor']);
 
     const checks: DoctorCheck[] = [];
     const failures: string[] = [];
@@ -229,6 +245,70 @@ export class AidlcCli {
   }
 
   // --- Private ---
+
+  /**
+   * True if this workspace has the Bun-based tool entry point, i.e. a
+   * Kiro-harness (Amadeus/custom clone-copy, or AWS kiro-ide) layout. A native
+   * AWS install does not ship .kiro/tools/aidlc-utility.ts.
+   */
+  private async hasBunTool(): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(
+        vscode.Uri.joinPath(this.workspaceUri, '.kiro', 'tools', 'aidlc-utility.ts')
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Resolve the native `aidlc` binary to invoke. Prefers the known install
+   * location by absolute path (quoted) when bare-PATH `aidlc` may be
+   * unavailable in this process; defaults to bare `aidlc` otherwise. Mirrors
+   * the install-time config fix.
+   */
+  private resolveNativeAidlcBinary(): string {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+    for (const bin of aidlcBinaryCandidates(process.platform, home)) {
+      if (fs.existsSync(bin)) {
+        return `"${bin}"`;
+      }
+    }
+    return 'aidlc';
+  }
+
+  /**
+   * Run the native `aidlc` binary (AWS native install). Mirrors runTool()'s
+   * result shape and output logging.
+   */
+  private async runNativeAidlc(args: string[]): Promise<AidlcCliResult> {
+    const bin = this.resolveNativeAidlcBinary();
+    const cmd = `${bin} ${args.map((a) => `"${a}"`).join(' ')}`;
+    this.outputChannel.appendLine(`> ${cmd}`);
+
+    try {
+      const { stdout, stderr } = await execAsync(cmd, {
+        cwd: this.workspaceUri.fsPath,
+        timeout: 60000,
+        env: { ...process.env },
+      });
+      if (stdout) {
+        this.outputChannel.appendLine(stdout);
+      }
+      if (stderr) {
+        this.outputChannel.appendLine(stderr);
+      }
+      return { success: true, stdout, stderr, exitCode: 0 };
+    } catch (error: unknown) {
+      const execError = error as { stdout?: string; stderr?: string; code?: number };
+      const stdout = execError.stdout ?? '';
+      const stderr = execError.stderr ?? '';
+      const exitCode = execError.code ?? 1;
+      this.outputChannel.appendLine(`Command failed (exit ${exitCode}): ${stderr}`);
+      return { success: false, stdout, stderr, exitCode };
+    }
+  }
 
   private async runTool(tool: string, args: string[]): Promise<AidlcCliResult> {
     const toolPath = path.join(this.toolsDir, tool);

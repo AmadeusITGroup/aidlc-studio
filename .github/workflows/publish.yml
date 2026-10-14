@@ -141,6 +141,21 @@ jobs:
         run: |
           VSIX="${EXTENSION_NAME}-${{ steps.version.outputs.version }}.vsix"
           echo "y" | npx @vscode/vsce package --no-dependencies --allow-missing-repository --out "$VSIX"
+
+          # Fail fast if the VSIX is bloated (e.g. node_modules accidentally
+          # bundled). Open VSX enforces a per-extension size limit (reported at
+          # /api/version, currently 250 MB) and rejects anything larger. A
+          # healthy build of this read-only extension is ~1 MB, so cap well
+          # under that at 100 MB and surface a clear error here instead of
+          # discovering it late in the Open VSX publish step.
+          MAX_UNCOMPRESSED=$((100 * 1024 * 1024))
+          UNCOMPRESSED="$(unzip -l "$VSIX" | awk 'END { print $1 }')"
+          echo "VSIX uncompressed size: ${UNCOMPRESSED} bytes (limit ${MAX_UNCOMPRESSED})"
+          if [ -z "$UNCOMPRESSED" ] || [ "$UNCOMPRESSED" -gt "$MAX_UNCOMPRESSED" ]; then
+            echo "::error::VSIX uncompressed size ${UNCOMPRESSED} bytes exceeds ${MAX_UNCOMPRESSED} bytes. Check that --no-dependencies is in effect and node_modules is not bundled."
+            exit 1
+          fi
+
           sha256sum "$VSIX" > checksums.txt
           SHA256="$(sha256sum "$VSIX" | cut -d' ' -f1)"
           echo "VSIX: $VSIX  SHA256: $SHA256"
@@ -241,10 +256,14 @@ jobs:
       - name: Verify integrity
         run: sha256sum -c checksums.txt
 
+      # ovsx 1.2.0 requires Node 22. It checks the registry's published size
+      # limit (/api/version, currently 250 MB) BEFORE upload and reports a clear
+      # message, instead of the opaque server-side "BLOCKLIST check failed"
+      # rejection the older 1.1.x line produced after upload.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: '22'
 
       - name: Publish to Open VSX
         env:
@@ -254,7 +273,7 @@ jobs:
             echo "::error::OPEN_VSX_TOKEN secret not configured"
             exit 1
           fi
-          npx ovsx publish "${EXTENSION_NAME}-${{ needs.prepare.outputs.version }}.vsix" -p "$OVSX_PAT"
+          npx ovsx@1.2.0 publish "${EXTENSION_NAME}-${{ needs.prepare.outputs.version }}.vsix" -p "$OVSX_PAT"
 
   summary:
     name: Publish Summary

@@ -3,12 +3,14 @@
 .vscode-test/**
 .github/**
 .kiro/**
+.agents/**
 .eslintrc.json
 .gitignore
 src/**
 scripts/**
 node_modules/**
 tsconfig.json
+tsconfig.eslint.json
 vitest.config.ts
 **/*.map
 **/*.ts
