@@ -1,5 +1,6 @@
-import { exec, ExecOptions } from 'child_process';
+import { exec, spawn, ExecOptions } from 'child_process';
 import { promisify } from 'util';
+import * as vscode from 'vscode';
 
 const execAsync = promisify(exec);
 
@@ -111,5 +112,97 @@ export class Shell {
     } else {
       await this.run(`cp "${source}" "${target}"`, options);
     }
+  }
+
+  /**
+   * Run a command and stream its stdout/stderr line-by-line to the given
+   * output channel as it runs, rather than buffering until completion.
+   * Use this for long-running installer commands where live progress matters.
+   *
+   * Resolves with { stdout, stderr } (full accumulated text) on exit code 0.
+   * Rejects with an Error whose message includes stderr on non-zero exit.
+   */
+  static runStreaming(
+    command: string,
+    outputChannel: vscode.OutputChannel,
+    options: { cwd?: string; timeout?: number; env?: NodeJS.ProcessEnv } = {}
+  ): Promise<ShellResult> {
+    return new Promise((resolve, reject) => {
+      // On Windows, spawn via cmd.exe so the command string is interpreted
+      // identically to child_process.exec (handles powershell one-liners, etc.)
+      const [shell, shellFlag] = this.isWindows
+        ? ['cmd.exe', '/c']
+        : ['/bin/sh', '-c'];
+
+      const child = spawn(shell, [shellFlag, command], {
+        cwd: options.cwd,
+        env: { ...process.env, ...(options.env ?? {}) },
+        windowsHide: true,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      // Guard against the promise settling twice (e.g. timeout fires then
+      // close fires, or error fires then close fires).
+      let settled = false;
+      const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+
+      // Stream stdout line-by-line to the output channel
+      let stdoutBuf = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        stdoutBuf += text;
+        const lines = stdoutBuf.split('\n');
+        stdoutBuf = lines.pop() ?? ''; // keep incomplete last line in buffer
+        for (const line of lines) {
+          if (line.trim()) { outputChannel.appendLine(line); }
+        }
+      });
+
+      // Stream stderr line-by-line too — installers use stderr for progress
+      let stderrBuf = '';
+      child.stderr.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stderr += text;
+        stderrBuf += text;
+        const lines = stderrBuf.split('\n');
+        stderrBuf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.trim()) { outputChannel.appendLine(line); }
+        }
+      });
+
+      // Single close handler — flushes buffers, clears timeout, settles promise.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      child.on('close', (code) => {
+        if (timer !== undefined) { clearTimeout(timer); }
+        if (stdoutBuf.trim()) { outputChannel.appendLine(stdoutBuf); }
+        if (stderrBuf.trim()) { outputChannel.appendLine(stderrBuf); }
+
+        settle(() => {
+          if (code === 0 || code === null) {
+            resolve({ stdout, stderr });
+          } else {
+            reject(new Error(
+              stderr.trim() || stdout.trim() || `Command failed with exit code ${code}`
+            ));
+          }
+        });
+      });
+
+      child.on('error', (err) => {
+        settle(() => reject(new Error(`Failed to spawn process: ${err.message}`)));
+      });
+
+      // Enforce timeout if specified — kill the child and reject; the close
+      // handler will fire after kill() but the settle guard prevents a double-reject.
+      if (options.timeout && options.timeout > 0) {
+        timer = setTimeout(() => {
+          child.kill();
+          settle(() => reject(new Error(`Command timed out after ${options.timeout}ms`)));
+        }, options.timeout);
+      }
+    });
   }
 }

@@ -46,7 +46,19 @@ function activateInternal(context: vscode.ExtensionContext): void {
   stateManager = new StateManager(context);
   const ruleLoader = new RuleLoader(context, outputChannel);
   const bunInstaller = new BunInstaller(outputChannel);
-  const updateChecker = new UpdateChecker(outputChannel);
+
+  // Restore the variant that was active in the previous session (or auto-detect
+  // from workspace files). Must complete before version checks and loadStatus()
+  // so all operations target the correct repo from the start.
+  const updateChecker = new UpdateChecker(outputChannel, ruleLoader.variant);
+  // Track whether the extension is still active when the async restore finishes.
+  let extensionActive = true;
+  context.subscriptions.push({ dispose: () => { extensionActive = false; } });
+  const variantRestored = ruleLoader.restoreVariant().then((variant) => {
+    if (!extensionActive) { return; }
+    updateChecker.setVariant(variant);
+    outputChannel.appendLine(`Active variant: ${variant.label} (${variant.installMethod})`);
+  });
 
   // Initialize tree view providers
   const systemProvider = new SystemProvider(ruleLoader, updateChecker, bunInstaller);
@@ -102,7 +114,10 @@ function activateInternal(context: vscode.ExtensionContext): void {
   // Callback that reloads system status from disk AND refreshes all views.
   // Used after setup/install/update so the System panel reflects reality.
   // Forces a fresh version check (bypasses cache) so the version is current.
+  // Also syncs the active variant into updateChecker so version checks target
+  // the correct repo/channel for whichever variant was just installed.
   const reloadStatusAndViews = async () => {
+    updateChecker.setVariant(ruleLoader.variant);
     await systemProvider.loadStatus(true);
     refreshAll();
   };
@@ -257,10 +272,11 @@ function activateInternal(context: vscode.ExtensionContext): void {
 
   // --- Startup logic ---
 
-  // Load system status (setup, bun, version)
-  systemProvider.loadStatus();
+  // Load system status (setup, bun, version) — wait for variant to be restored
+  // first so the version check targets the correct repo from the very first load.
+  void variantRestored.then(() => systemProvider.loadStatus());
 
-  // Auto-check for updates on startup
+  // Auto-check for updates on startup (5s delay so activation stays snappy)
   const config = vscode.workspace.getConfiguration('amadeus-aidlc');
   if (config.get<boolean>('autoCheckUpdates', true)) {
     setTimeout(() => {
@@ -302,15 +318,36 @@ function activateInternal(context: vscode.ExtensionContext): void {
     vscode.commands.executeCommand('setContext', 'amadeus-aidlc.hasAwaitingApproval', hasAwaiting);
   });
 
-  // Watch for state file changes to auto-refresh views
+  // Watch for state file changes to auto-refresh views.
+  // The AWS native binary writes state atomically (temp-file + rename), which
+  // fires onDidCreate rather than onDidChange for the first write in an intent.
+  // Subscribe to both so views update regardless of write strategy.
   const stateWatcher = vscode.workspace.createFileSystemWatcher('**/aidlc/**/aidlc-state.*');
-  stateWatcher.onDidChange(() => {
+  const onStateChange = () => {
     outputChannel.appendLine('State file changed — refreshing views.');
-    // Reload from disk
     stateManager.invalidateCache();
     refreshAll();
-  });
+  };
+  stateWatcher.onDidChange(onStateChange);
+  stateWatcher.onDidCreate(onStateChange);
   context.subscriptions.push(stateWatcher);
+
+  // Also watch the active-intent pointer so switching intents (which rewrites
+  // this file without touching aidlc-state.md) is picked up immediately.
+  const intentPointerWatcher = vscode.workspace.createFileSystemWatcher(
+    '**/aidlc/spaces/default/intents/active-intent'
+  );
+  intentPointerWatcher.onDidChange(onStateChange);
+  intentPointerWatcher.onDidCreate(onStateChange);
+  context.subscriptions.push(intentPointerWatcher);
+
+  // Watch intents.json so the Intents panel updates when a new intent is created.
+  const intentsJsonWatcher = vscode.workspace.createFileSystemWatcher(
+    '**/aidlc/spaces/default/intents/intents.json'
+  );
+  intentsJsonWatcher.onDidChange(onStateChange);
+  intentsJsonWatcher.onDidCreate(onStateChange);
+  context.subscriptions.push(intentsJsonWatcher);
 
   outputChannel.appendLine('AIDLC Studio activated.');
 

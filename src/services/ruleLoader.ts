@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Shell } from './shell';
-import { AidlcVariant, getDefaultVariant, resolveHarness } from './variants';
+import { AidlcVariant, getDefaultVariant, getVariant, resolveHarness } from './variants';
 import {
   aidlcBinaryCandidates,
   buildNativeInstallCommand,
@@ -32,13 +32,71 @@ export class RuleLoader {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly outputChannel?: vscode.OutputChannel
-  ) {}
+  ) { }
 
   /**
    * Set the variant to install. Called by the Setup command after the user picks.
+   * Persists the choice to workspaceState so it survives extension restarts.
+   *
+   * NOTE: for 'custom' variants (rulesSource override), we persist the base
+   * variant id ('aws') rather than 'custom', because 'custom' is not a real
+   * AIDLC_VARIANTS entry and getVariant('custom') would fall back to aws anyway.
+   * The rulesSource setting itself is the durable override — it is re-applied
+   * by getVariant() on every activation.
    */
   setVariant(variant: AidlcVariant): void {
     this.activeVariant = variant;
+    // Persist the underlying id; 'custom' is a transient overlay, not a stored id.
+    const persistId = variant.id === 'custom' ? 'aws' : variant.id;
+    this.context.workspaceState.update('aidlc.variantId', persistId);
+  }
+
+  /**
+   * Restore the variant on extension activation so version checks, updates, and
+   * doctor commands all target the right repo for an already-configured workspace.
+   *
+   * Strategy (in priority order):
+   *  1. Persisted variant ID in workspaceState  — set by setVariant() at install.
+   *  2. File-based auto-detection from the workspace  — handles workspaces that
+   *     were configured before this persist logic existed:
+   *     - If `.kiro/tools/aidlc-utility.ts` exists  → Amadeus / custom variant
+   *       (AWS native install does NOT ship this file).
+   *     - If the `aidlc` binary is reachable on PATH  → AWS native variant.
+   *     - Otherwise fall back to the default (AWS).
+   *
+   * Returns the resolved variant so callers (extension.ts) can sync it into
+   * other services (e.g. UpdateChecker) immediately.
+   */
+  async restoreVariant(): Promise<AidlcVariant> {
+    // 1. Persisted ID
+    const persistedId = this.context.workspaceState.get<string>('aidlc.variantId');
+    if (persistedId) {
+      this.activeVariant = getVariant(persistedId);
+      return this.activeVariant;
+    }
+
+    // 2. File-based auto-detection from the workspace files
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder) {
+      // Amadeus/custom: presence of the bun tool entry point.
+      // AWS native install does NOT ship aidlc-utility.ts, so its absence
+      // means AWS (or an unconfigured workspace).
+      const bunToolUri = vscode.Uri.joinPath(
+        workspaceFolder.uri, '.kiro', 'tools', 'aidlc-utility.ts'
+      );
+      try {
+        await vscode.workspace.fs.stat(bunToolUri);
+        // bun tool found → Amadeus. Persist so next activation is instant.
+        this.activeVariant = getVariant('amadeus');
+        this.context.workspaceState.update('aidlc.variantId', this.activeVariant.id);
+        return this.activeVariant;
+      } catch { /* not found — not an Amadeus install, fall through to AWS */ }
+    }
+
+    // 3. Default: AWS native install (or unconfigured workspace).
+    // No persistence here — only write to workspaceState once the variant is
+    // confirmed by an actual install.
+    return this.activeVariant; // already getDefaultVariant() (aws)
   }
 
   get variant(): AidlcVariant {
@@ -65,7 +123,14 @@ export class RuleLoader {
 
     const installCmd = buildNativeInstallCommand(process.platform, scriptUrl);
     this.outputChannel?.appendLine(`Running official native installer: ${installCmd}`);
-    await Shell.run(installCmd, { timeout: 180000, cwd: workspaceUri.fsPath });
+    if (this.outputChannel) {
+      await Shell.runStreaming(installCmd, this.outputChannel, {
+        timeout: 180000,
+        cwd: workspaceUri.fsPath,
+      });
+    } else {
+      await Shell.run(installCmd, { timeout: 180000, cwd: workspaceUri.fsPath });
+    }
 
     // Configure the single harness that matches the host IDE, clamped to what
     // this variant actually ships.
@@ -89,40 +154,58 @@ export class RuleLoader {
     const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
     const candidates = aidlcBinaryCandidates(process.platform, home);
 
+    // Try each known absolute path first, then fall back to bare PATH.
+    const binsToTry: string[] = [];
     for (const bin of candidates) {
       try {
         await vscode.workspace.fs.stat(vscode.Uri.file(bin));
+        binsToTry.push(`"${bin}"`);
       } catch {
-        continue; // not installed here — try next known location
-      }
-      try {
-        await Shell.run(`"${bin}" config --harness ${harness}`, {
-          timeout: 60000,
-          cwd: workspaceUri.fsPath,
-        });
-        this.outputChannel?.appendLine(`Configured harness using ${bin}`);
-        return;
-      } catch {
-        // exists but failed to run — try the next candidate / bare PATH
+        // not at this location — skip
       }
     }
+    binsToTry.push('aidlc'); // bare PATH attempt last
 
-    // Secondary attempt: bare `aidlc` on PATH.
-    try {
-      await Shell.run(`aidlc config --harness ${harness}`, {
-        timeout: 60000,
-        cwd: workspaceUri.fsPath,
-      });
-      this.outputChannel?.appendLine('Configured harness using aidlc on PATH');
-      return;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.outputChannel?.appendLine(`aidlc config via PATH failed (${msg}).`);
+    for (const binExpr of binsToTry) {
+      try {
+        if (this.outputChannel) {
+          await Shell.runStreaming(`${binExpr} config --harness ${harness} --yes`, this.outputChannel, {
+            timeout: 60000,
+            cwd: workspaceUri.fsPath,
+          });
+        } else {
+          await Shell.run(`${binExpr} config --harness ${harness} --yes`, {
+            timeout: 60000,
+            cwd: workspaceUri.fsPath,
+          });
+        }
+        this.outputChannel?.appendLine(`Configured harness using ${binExpr}`);
+        return;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.outputChannel?.appendLine(`aidlc config failed with ${binExpr}: ${msg}`);
+
+        // Exit code 4 = config conflict (e.g. existing AGENTS.md the installer
+        // can't categorise). Surface a clear, actionable message instead of
+        // silently trying the next candidate — all candidates will hit the same
+        // conflict.
+        if (msg.includes('config conflict') || msg.includes('legacy root integration')) {
+          throw new Error(
+            'aidlc config detected a conflict with an existing AGENTS.md file. ' +
+            'This happens when the workspace already has an AGENTS.md that is not managed by AIDLC. ' +
+            'To fix: open a terminal in your project and run:\n' +
+            '  aidlc config --dry-run --verbose   (to preview)\n' +
+            `  aidlc config --harness ${harness} --yes   (to apply)\n` +
+            'You may need to move or merge your existing AGENTS.md first.'
+          );
+        }
+      }
     }
 
     throw new Error(
       `AIDLC installed but "aidlc config --harness ${harness}" could not run. ` +
-      'Open a new terminal and run it manually in your project, then reload.'
+      'Open a new terminal in your project and run it manually:\n' +
+      `  aidlc config --harness ${harness} --yes`
     );
   }
 

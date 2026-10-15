@@ -11,7 +11,7 @@ describe('buildNativeInstallCommand', () => {
 
   it('pipes the remote PowerShell installer into iex on Windows', () => {
     expect(buildNativeInstallCommand('win32', url)).toBe(
-      `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${url} | iex"`
+      `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm '${url}'))) -Yes"`
     );
   });
 
@@ -22,11 +22,40 @@ describe('buildNativeInstallCommand', () => {
 });
 
 describe('aidlcBinaryCandidates', () => {
-  it('lists the Windows install locations in order', () => {
-    expect(aidlcBinaryCandidates('win32', 'C:\\Users\\dev')).toEqual([
-      'C:\\Users\\dev\\.aidlc\\bin\\aidlc.exe',
-      'C:\\Users\\dev\\AppData\\Local\\aidlc\\aidlc.exe',
-    ]);
+  it('lists the Windows install locations in order (LOCALAPPDATA set)', () => {
+    const originalLocalAppData = process.env.LOCALAPPDATA;
+    // Use a path that differs from the home-derived fallback so this test
+    // can't accidentally pass via the fallback path.
+    process.env.LOCALAPPDATA = 'D:\\CustomAppData';
+    try {
+      expect(aidlcBinaryCandidates('win32', 'C:\\Users\\dev')).toEqual([
+        'D:\\CustomAppData\\aidlc\\bin\\aidlc',
+        'C:\\Users\\dev\\.aidlc\\bin\\aidlc.exe',
+        'D:\\CustomAppData\\aidlc\\aidlc.exe',
+      ]);
+    } finally {
+      if (originalLocalAppData === undefined) {
+        delete process.env.LOCALAPPDATA;
+      } else {
+        process.env.LOCALAPPDATA = originalLocalAppData;
+      }
+    }
+  });
+
+  it('falls back to home-derived path when LOCALAPPDATA is unset', () => {
+    const originalLocalAppData = process.env.LOCALAPPDATA;
+    delete process.env.LOCALAPPDATA;
+    try {
+      expect(aidlcBinaryCandidates('win32', 'C:\\Users\\dev')).toEqual([
+        'C:\\Users\\dev\\AppData\\Local\\aidlc\\bin\\aidlc',
+        'C:\\Users\\dev\\.aidlc\\bin\\aidlc.exe',
+        'C:\\Users\\dev\\AppData\\Local\\aidlc\\aidlc.exe',
+      ]);
+    } finally {
+      if (originalLocalAppData !== undefined) {
+        process.env.LOCALAPPDATA = originalLocalAppData;
+      }
+    }
   });
 
   it('lists the Unix install locations in order', () => {

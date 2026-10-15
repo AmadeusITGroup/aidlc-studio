@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Shell } from './shell';
-import { getDefaultVariant } from './variants';
+import { AidlcVariant, getDefaultVariant } from './variants';
+import { aidlcBinaryCandidates } from './installCommands';
 
 export interface VersionInfo {
   currentVersion: string | null;
@@ -14,14 +15,31 @@ export interface VersionInfo {
 }
 
 /**
- * Checks the Amadeus AIDLC repo for updates and handles pulling the latest.
+ * Checks the installed AIDLC variant for updates and handles updating it.
+ *
+ * The active variant must be passed so version checks and updates target the
+ * right repo/channel:
+ *  - 'native-installer' variants (AWS)  → use `aidlc update` CLI command
+ *  - 'repo-installer' / 'git-clone-copy' variants (Amadeus / custom)
+ *      → git-clone the configured repo and copy files
  */
 export class UpdateChecker {
   private cachedVersionInfo: VersionInfo | null = null;
   private lastChecked: number = 0;
   private readonly CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-  constructor(private readonly outputChannel: vscode.OutputChannel) {}
+  constructor(
+    private readonly outputChannel: vscode.OutputChannel,
+    /** The currently-installed variant. Defaults to the default variant when
+     *  not yet set (before a workspace is configured). */
+    private activeVariant: AidlcVariant = getDefaultVariant()
+  ) { }
+
+  /** Update the active variant when the user installs or switches. */
+  setVariant(variant: AidlcVariant): void {
+    this.activeVariant = variant;
+    this.cachedVersionInfo = null; // stale for a different variant
+  }
 
   /**
    * Get version info (cached if recent).
@@ -46,15 +64,22 @@ export class UpdateChecker {
    * Force a fresh check, ignoring cache.
    */
   async checkForUpdates(): Promise<VersionInfo> {
+    const variant = this.activeVariant;
+
+    // For native-installer (AWS): ask the binary itself for its version and
+    // compare against the GitHub releases API.
+    if (variant.installMethod === 'native-installer') {
+      return this.checkNativeInstallerVersion(variant);
+    }
+
+    // For repo-based variants: compare the local version file against the
+    // latest GitHub/git tag on the configured repo.
     const config = vscode.workspace.getConfiguration('amadeus-aidlc');
-    const repoUrl = config.get<string>('updateRepoUrl', '') || getDefaultVariant().repoUrl;
+    const repoUrl = config.get<string>('updateRepoUrl', '').trim() || variant.repoUrl;
 
     this.outputChannel.appendLine(`Checking for updates from: ${repoUrl}`);
 
-    // Get current installed version
-    const currentVersion = await this.getCurrentVersion();
-
-    // Get latest version + release details from repo
+    const currentVersion = await this.getCurrentVersionFromFile();
     const release = await this.getLatestRelease(repoUrl);
     const latestVersion = release?.version ?? null;
 
@@ -83,17 +108,115 @@ export class UpdateChecker {
   }
 
   /**
-   * Pull the latest rules from the configured repo.
+   * Update AIDLC to the latest release.
+   * - Native-installer variants (AWS): delegates to `aidlc update`.
+   * - Repo-based variants: git-clones and copies files.
    */
   async pullLatest(): Promise<boolean> {
+    if (this.activeVariant.installMethod === 'native-installer') {
+      return this.updateViaNativeCli();
+    }
+    return this.updateViaGitClone();
+  }
+
+  // --- Private: native-installer (AWS) path ---
+
+  private async checkNativeInstallerVersion(variant: AidlcVariant): Promise<VersionInfo> {
+    const repoUrl = variant.repoUrl;
+    this.outputChannel.appendLine(`Checking for updates from: ${repoUrl}`);
+
+    // Current version: ask the installed binary
+    const currentVersion = await this.getCurrentVersionFromBinary();
+
+    // Latest version: GitHub releases API
+    const release = await this.getLatestRelease(repoUrl);
+    const latestVersion = release?.version ?? null;
+
+    const updateAvailable = latestVersion !== null
+      && currentVersion !== null
+      && latestVersion !== currentVersion;
+
+    const info: VersionInfo = {
+      currentVersion,
+      latestVersion: latestVersion ?? 'unknown',
+      updateAvailable,
+      releaseUrl: release?.url ?? `${repoUrl}/releases/latest`,
+      releaseName: release?.name,
+      releaseNotes: release?.notes,
+      publishedAt: release?.publishedAt,
+    };
+
+    this.cachedVersionInfo = info;
+    this.lastChecked = Date.now();
+
+    this.outputChannel.appendLine(
+      `Version check: current=${currentVersion ?? 'unknown'}, latest=${latestVersion ?? 'unknown'}, update=${updateAvailable}`
+    );
+
+    return info;
+  }
+
+  private async updateViaNativeCli(): Promise<boolean> {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
       throw new Error('No workspace folder');
     }
 
+    return vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'Updating AIDLC...',
+        cancellable: false,
+      },
+      async (progress) => {
+        progress.report({ message: 'Running aidlc update...', increment: 20 });
+
+        // Resolve the binary — prefer absolute path so a stale process PATH
+        // doesn't cause a "not found" failure right after install.
+        const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+        const candidates = aidlcBinaryCandidates(process.platform, home);
+        let binExpr = 'aidlc';
+        for (const bin of candidates) {
+          try {
+            await vscode.workspace.fs.stat(vscode.Uri.file(bin));
+            binExpr = `"${bin}"`;
+            break;
+          } catch { /* not here */ }
+        }
+
+        this.outputChannel.appendLine(`Running: ${binExpr} update`);
+        try {
+          await Shell.runStreaming(`${binExpr} update`, this.outputChannel, {
+            cwd: workspaceFolder.uri.fsPath,
+            timeout: 180000,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          throw new Error(`aidlc update failed: ${msg}`);
+        }
+
+        progress.report({ message: 'Verifying...', increment: 60 });
+        this.cachedVersionInfo = null;
+        await this.checkForUpdates();
+
+        progress.report({ message: 'Done.', increment: 20 });
+        this.outputChannel.appendLine('Update completed successfully.');
+        return true;
+      }
+    );
+  }
+
+  // --- Private: repo-based (Amadeus / custom) path ---
+
+  private async updateViaGitClone(): Promise<boolean> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+      throw new Error('No workspace folder');
+    }
+
+    const variant = this.activeVariant;
     const config = vscode.workspace.getConfiguration('amadeus-aidlc');
-    const variant = getDefaultVariant();
-    const repoUrl = config.get<string>('updateRepoUrl', '') || variant.repoUrl;
+    const repoUrl = config.get<string>('updateRepoUrl', '').trim() || variant.repoUrl;
 
     return vscode.window.withProgress(
       {
@@ -106,10 +229,8 @@ export class UpdateChecker {
         const tempDir = path.join(workspaceFolder.uri.fsPath, '.aidlc-update-tmp');
 
         try {
-          // Always clean temp first
           await Shell.removeDir(tempDir);
 
-          // Clone latest to temp
           progress.report({ message: 'Downloading latest version...', increment: 30 });
           this.outputChannel.appendLine(`Cloning ${repoUrl} (${branch}) to ${tempDir}`);
 
@@ -118,7 +239,6 @@ export class UpdateChecker {
             timeout: 120000,
           });
 
-          // Copy updated files
           progress.report({ message: 'Installing updated rules...', increment: 30 });
 
           const distDir = path.join(tempDir, ...variant.distPath.split('/'));
@@ -128,13 +248,11 @@ export class UpdateChecker {
           await Shell.copyDirContents(path.join(distDir, '.kiro'), kiroDir);
           await Shell.copyDirContents(path.join(distDir, 'aidlc'), aidlcDir);
 
-          // Cleanup temp
           progress.report({ message: 'Cleaning up...', increment: 20 });
           await Shell.removeDir(tempDir);
 
-          // Re-check version
           progress.report({ message: 'Verifying...', increment: 20 });
-          this.cachedVersionInfo = null; // Force fresh check
+          this.cachedVersionInfo = null;
           await this.checkForUpdates();
 
           this.outputChannel.appendLine('Update completed successfully.');
@@ -149,15 +267,37 @@ export class UpdateChecker {
     );
   }
 
-  // --- Private ---
+  // --- Private: version detection ---
 
-  private async getCurrentVersion(): Promise<string | null> {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-      return null;
+  /** Ask the installed aidlc binary for its version (native-installer path). */
+  private async getCurrentVersionFromBinary(): Promise<string | null> {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+    const candidates = aidlcBinaryCandidates(process.platform, home);
+
+    for (const bin of candidates) {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.file(bin));
+        const { stdout } = await Shell.run(`"${bin}" --version`, { timeout: 10000 });
+        const match = stdout.match(/(\d+\.\d+\.\d+)/);
+        if (match) { return match[1]; }
+      } catch { /* try next */ }
     }
 
-    // Try reading version from a known version file or package.json in .kiro/tools
+    // Fallback: bare PATH
+    try {
+      const { stdout } = await Shell.run('aidlc --version', { timeout: 10000 });
+      const match = stdout.match(/(\d+\.\d+\.\d+)/);
+      if (match) { return match[1]; }
+    } catch { /* not on PATH */ }
+
+    return null;
+  }
+
+  /** Read version from the workspace's version file (repo-based variants). */
+  private async getCurrentVersionFromFile(): Promise<string | null> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) { return null; }
+
     const versionFilePaths = [
       path.join(workspaceFolder.uri.fsPath, '.kiro', 'tools', 'data', 'version.json'),
       path.join(workspaceFolder.uri.fsPath, '.kiro', 'VERSION'),
@@ -166,41 +306,28 @@ export class UpdateChecker {
 
     for (const versionPath of versionFilePaths) {
       try {
-        const uri = vscode.Uri.file(versionPath);
-        const content = await vscode.workspace.fs.readFile(uri);
+        const content = await vscode.workspace.fs.readFile(vscode.Uri.file(versionPath));
         const text = Buffer.from(content).toString('utf-8').trim();
-
-        // Try parsing as JSON
         try {
           const parsed = JSON.parse(text);
-          if (parsed.version) {
-            return parsed.version;
-          }
+          if (parsed.version) { return parsed.version; }
         } catch {
-          // Plain text version
-          if (text.match(/^\d+\.\d+\.\d+/)) {
-            return text.split('\n')[0].trim();
-          }
+          if (text.match(/^\d+\.\d+\.\d+/)) { return text.split('\n')[0].trim(); }
         }
-      } catch {
-        // File doesn't exist, try next
-      }
+      } catch { /* file doesn't exist */ }
     }
 
-    // Fallback: try bun tool to get version
+    // Fallback: bun tool
     try {
-      const toolPath = path.join(workspaceFolder.uri.fsPath, '.kiro', 'tools', 'aidlc-utility.ts');
+      const workspacePath = workspaceFolder.uri.fsPath;
+      const toolPath = path.join(workspacePath, '.kiro', 'tools', 'aidlc-utility.ts');
       const { stdout } = await Shell.run(`bun "${toolPath}" version`, {
-        cwd: workspaceFolder.uri.fsPath,
+        cwd: workspacePath,
         timeout: 10000,
       });
       const match = stdout.match(/(\d+\.\d+\.\d+)/);
-      if (match) {
-        return match[1];
-      }
-    } catch {
-      // Tool not available
-    }
+      if (match) { return match[1]; }
+    } catch { /* tool not available */ }
 
     return null;
   }
@@ -231,24 +358,18 @@ export class UpdateChecker {
               publishedAt: release.published_at,
             };
           }
-        } catch {
-          // Not JSON or no tag_name
-        }
+        } catch { /* not JSON or no tag_name */ }
       }
 
-      // Fallback: git ls-remote to check latest tag
+      // Fallback: git ls-remote
       const { stdout } = await Shell.run(
         `git ls-remote --tags --sort=-v:refname "${repoUrl}" "v*"`,
         { timeout: 15000 }
       );
       const firstLine = stdout.split('\n')[0];
       const tagMatch = firstLine?.match(/refs\/tags\/v?([\d.]+)/);
-      if (tagMatch) {
-        return { version: tagMatch[1] };
-      }
-    } catch {
-      // Network not available or auth needed
-    }
+      if (tagMatch) { return { version: tagMatch[1] }; }
+    } catch { /* network unavailable or auth needed */ }
 
     return null;
   }
