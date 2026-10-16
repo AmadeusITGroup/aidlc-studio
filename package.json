@@ -43,7 +43,6 @@
         "category": "AIDLC Studio",
         "icon": "$(gear)"
       },
-
       {
         "command": "amadeus-aidlc.doctor",
         "title": "/aidlc --doctor — Health Check",
@@ -217,6 +216,12 @@
         "title": "Welcome",
         "category": "AIDLC Studio",
         "icon": "$(home)"
+      },
+      {
+        "command": "amadeus-aidlc.workspaceSetup",
+        "title": "Workspace Setup — Configure Repos",
+        "category": "AIDLC Studio",
+        "icon": "$(repo)"
       }
     ],
     "viewsContainers": {
@@ -316,6 +321,10 @@
           "when": "false"
         },
         {
+          "command": "amadeus-aidlc.workspaceSetup",
+          "when": "amadeus-aidlc.setupDone"
+        },
+        {
           "command": "amadeus-aidlc.approveStage",
           "when": "amadeus-aidlc.hasAwaitingApproval"
         },
@@ -358,13 +367,21 @@
         "amadeus-aidlc.defaultDepth": {
           "type": "string",
           "default": "standard",
-          "enum": ["minimal", "standard", "comprehensive"],
+          "enum": [
+            "minimal",
+            "standard",
+            "comprehensive"
+          ],
           "description": "Default depth level for new workflows."
         },
         "amadeus-aidlc.defaultTestStrategy": {
           "type": "string",
           "default": "standard",
-          "enum": ["minimal", "standard", "comprehensive"],
+          "enum": [
+            "minimal",
+            "standard",
+            "comprehensive"
+          ],
           "description": "Default test strategy for new workflows."
         },
         "amadeus-aidlc.autoDetectSetup": {
