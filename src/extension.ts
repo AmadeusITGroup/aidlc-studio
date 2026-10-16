@@ -198,6 +198,12 @@ function activateInternal(context: vscode.ExtensionContext): void {
       WelcomePanel.show(context);
     }),
 
+    // Workspace setup — build a repos.json manifest for multi-repo workspaces
+    vscode.commands.registerCommand('amadeus-aidlc.workspaceSetup', async () => {
+      const { WorkspaceSetupPanel } = await import('./views/workspaceSetupPanel');
+      await WorkspaceSetupPanel.show();
+    }),
+
     // Intent switching — direct click from tree (no QuickPick)
     vscode.commands.registerCommand('amadeus-aidlc.switchIntentDirect', async (intent: Intent) => {
       const confirm = await vscode.window.showInformationMessage(
