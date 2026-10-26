@@ -216,6 +216,12 @@
         "title": "Welcome",
         "category": "AIDLC Studio",
         "icon": "$(home)"
+      },
+      {
+        "command": "amadeus-aidlc.workspaceSetup",
+        "title": "Workspace Setup — Configure Repos",
+        "category": "AIDLC Studio",
+        "icon": "$(repo)"
       }
     ],
     "viewsContainers": {
@@ -313,6 +319,10 @@
         {
           "command": "amadeus-aidlc.refreshViews",
           "when": "false"
+        },
+        {
+          "command": "amadeus-aidlc.workspaceSetup",
+          "when": "amadeus-aidlc.setupDone"
         },
         {
           "command": "amadeus-aidlc.approveStage",

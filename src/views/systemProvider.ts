@@ -19,12 +19,13 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
   private bunInstalled: boolean | null = null;
   private bunVersion: string | null = null;
   private versionInfo: VersionInfo | null = null;
+  private reposManifestExists = false;
 
   constructor(
     private readonly ruleLoader: RuleLoader,
     private readonly updateChecker: UpdateChecker,
     private readonly bunInstaller: BunInstaller
-  ) {}
+  ) { }
 
   refresh(): void {
     this._onDidChangeTreeData.fire();
@@ -49,6 +50,10 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     // Setup is "done" only when both the framework and bun are present
     const setupDone = this.setupConfigured && this.bunInstalled;
     await vscode.commands.executeCommand('setContext', 'amadeus-aidlc.setupDone', setupDone);
+
+    // Does the workspace already have a repos.json manifest? Used to render the
+    // Workspace Setup row (which only appears once overall setup is done).
+    this.reposManifestExists = await this.hasReposManifest();
 
     // Render the fast results right away.
     this.refresh();
@@ -94,10 +99,32 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     items.push(this.buildBunItem());
     items.push(this.buildHealthItem());
     items.push(this.buildVersionItem());
+
+    // Workspace Setup only appears once the entire setup is done
+    // (framework + bun both present).
+    if (this.setupConfigured && this.bunInstalled) {
+      items.push(this.buildWorkspaceSetupItem());
+    }
+
     items.push(this.buildAnalyticsItem());
     items.push(this.buildDocsItem());
 
     return items;
+  }
+
+  /** True when a repos.json manifest exists at the workspace root. */
+  private async hasReposManifest(): Promise<boolean> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+      return false;
+    }
+    const uri = vscode.Uri.joinPath(workspaceFolder.uri, 'repos.json');
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // --- Item builders ---
@@ -161,6 +188,34 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
       '**AIDLC is not installed.**\n\nClick to install the AI-DLC framework:\n- Pick a variant (AWS open source by default)\n- Installs the framework into `.kiro/` and `aidlc/`\n- Runs `/aidlc --doctor` to verify\n\n*Click to start initial setup.*'
     );
     item.command = { command: 'amadeus-aidlc.setup', title: 'Set Up AIDLC' };
+    return item;
+  }
+
+  private buildWorkspaceSetupItem(): SystemItem {
+    if (this.reposManifestExists) {
+      const item = new SystemItem(
+        'Workspace Setup',
+        'Repos configured — click to edit',
+        new vscode.ThemeIcon('repo', new vscode.ThemeColor('testing.iconPassed')),
+        'system-workspace-ok'
+      );
+      item.tooltip = new vscode.MarkdownString(
+        '**Multi-repo workspace configured.**\n\nA `repos.json` manifest exists at the workspace root declaring the org and repos for this workspace.\n\n*Click to edit the manifest.*'
+      );
+      item.command = { command: 'amadeus-aidlc.workspaceSetup', title: 'Edit Workspace Setup' };
+      return item;
+    }
+
+    const item = new SystemItem(
+      'Workspace Setup',
+      'Add repos — click to configure',
+      new vscode.ThemeIcon('repo', new vscode.ThemeColor('notificationsInfoIcon.foreground')),
+      'system-workspace-missing'
+    );
+    item.tooltip = new vscode.MarkdownString(
+      '**Set up a multi-repo workspace.**\n\nDeclare the GitHub org and the repositories that make up this workspace. This writes a `repos.json` manifest at the workspace root.\n\n*Click to open the form.*'
+    );
+    item.command = { command: 'amadeus-aidlc.workspaceSetup', title: 'Workspace Setup' };
     return item;
   }
 
