@@ -1,0 +1,14 @@
+{
+  "plugin": "amadeus",
+  "version": 1,
+  "appliedAt": "2026-10-23T06:38:21.340Z",
+  "edits": [
+    {
+      "scope": "express",
+      "key": "sensors",
+      "file": ".kiro/scopes/aidlc-express.md",
+      "original": "sensors: off",
+      "updated": "sensors: on"
+    }
+  ]
+}

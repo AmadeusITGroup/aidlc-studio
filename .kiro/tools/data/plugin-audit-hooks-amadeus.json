@@ -1,0 +1,15 @@
+{
+  "plugin": "amadeus",
+  "harness": "kiro-ide",
+  "appliedAt": "2026-10-23T06:38:21.372Z",
+  "files": {
+    ".kiro/tools/amadeus-audit-view.ts": "c0561da4ac26433043207f04d3b94af040951aa19d2db7a092f2b8aa28909fcb",
+    ".kiro/hooks/aidlc-amadeus-audit-reconcile.ts": "4560750f5cfeb76bd53c329a0494530d8de6dd4197ac047d4eec564fa604b942",
+    ".kiro/hooks/amadeus-audit-reconcile.json": "a015327e9628ed3b12413f7029c9cf845eab6e7e4193cd763aba7456cc21aeff"
+  },
+  "created": [
+    ".kiro/hooks/aidlc-amadeus-audit-reconcile.ts",
+    ".kiro/hooks/amadeus-audit-reconcile.json"
+  ],
+  "merges": []
+}

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "name": "amadeus",
+  "files": [
+    {
+      "path": ".kiro/knowledge/aidlc-architect-agent/repo-evidence-gathering.md",
+      "sha256": "sha256:8eea3ff1d8437a02153d90f52abc7a321f4c95cdc1520eb039faa50e59dd6fbd"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-pipeline-deploy-agent/amadeus-cicd-toolchain.md",
+      "sha256": "sha256:5e4bc385439ffe66155ca52676eca499c1e473eca3148d61546362b20536daa2"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-product-agent/intent-source-ingestion.md",
+      "sha256": "sha256:6bdd10eacd1d56b1df5d7870d738ec2b0da8305152e3f6b3f64dec428588c02b"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-product-agent/repo-landscape-search.md",
+      "sha256": "sha256:40431c675dca0beeab93ed23a43ff6f7fa2881a87f3554f49dd761c922bbc59e"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-shared/amadeus-platform-peer.md",
+      "sha256": "sha256:0b6d0aee262cd4ccf24824606e98695634874a7a97bf778ed71ed4b530c6a430"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-shared/confluence-mcp.md",
+      "sha256": "sha256:4be700c1e8b478d59073e519c92ae2d0bffa99386de9837d9c0a27bdea962782"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-shared/mcp-integration.md",
+      "sha256": "sha256:fe5066828efbec592c7e2ce28ae261d42fa9e9a7bdb923f479d56db09d3d6cd1"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-shared/okf-knowledge-ingestion.md",
+      "sha256": "sha256:a95409cc3b553540be8845d82066e6bf6b4f80a3afd9b9f59863e83675f899c8"
+    },
+    {
+      "path": ".kiro/knowledge/aidlc-shared/repo-remote-evidence.md",
+      "sha256": "sha256:0ede27f98bc5616fbe3108d8be0f9fb003c913072a079dca34370f66ac0e6aef"
+    },
+    {
+      "path": ".kiro/knowledge/amadeus-platform-agent/cost-and-resource-optimization.md",
+      "sha256": "sha256:c9a4e8e315316b592eb2975164833617702156440418b239cef26e601dd4eb3e"
+    },
+    {
+      "path": ".kiro/knowledge/amadeus-platform-agent/environment-strategy.md",
+      "sha256": "sha256:597168ebadf0802c29584b411472d56c70aba78f9030f0c9f8e7e01a54f3ad67"
+    },
+    {
+      "path": ".kiro/knowledge/amadeus-platform-agent/infrastructure-as-code-patterns.md",
+      "sha256": "sha256:a271909c7b05dc7e0f358fd95dc8f5095821fca0cd4e1cc7f96801748e19d318"
+    },
+    {
+      "path": ".kiro/knowledge/amadeus-platform-agent/methodology.md",
+      "sha256": "sha256:1903659ec1b2b080982cc12228a925e73ce1845c36f0cf169dd6c5e13bb68190"
+    },
+    {
+      "path": ".kiro/knowledge/amadeus-platform-agent/platform-catalogue.md",
+      "sha256": "sha256:b22bfad66dad57f889fdc040bb1e7f24e68da4ebc6c616c73d0dac75c92f6f14"
+    },
+    {
+      "path": ".kiro/knowledge/amadeus-platform-agent/security-zones.md",
+      "sha256": "sha256:f8223380e6a00c496fbf40c219eb6ec46dab293fad8f82581051d57ebf14e09a"
+    },
+    {
+      "path": ".kiro/tools/amadeus-audit-view.ts",
+      "sha256": "sha256:c0561da4ac26433043207f04d3b94af040951aa19d2db7a092f2b8aa28909fcb"
+    }
+  ]
+}

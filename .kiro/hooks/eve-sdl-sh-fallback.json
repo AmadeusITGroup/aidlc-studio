@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "eve-sdl-sh-fallback",
+      "trigger": "SessionStart",
+      "description": "Windows-only sh->PowerShell fallback for the SDL session hooks. Runs once per session under bun (native on Windows, no sh needed) and, ONLY when on Windows with a POSIX `sh` NOT on PATH (or AIDLC_SDL_FORCE_PS1=1), runs the native PowerShell twins eve-sdl-install-precommit.ps1 and eve-sdl-preflight.ps1 so the git pre-commit hook still installs and prerequisites/credentials are still surfaced. Silent no-op on macOS/Linux and on Windows WITH sh (the .sh twins already ran). The .sh hooks stay the primary path; this only fills the sh-less-Windows gap. SessionStart cannot block; always exits 0.",
+      "action": { "type": "command", "command": "bun .kiro/hooks/eve-sdl-sh-fallback.ts" }
+    }
+  ]
+}

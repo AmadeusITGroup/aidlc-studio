@@ -1,0 +1,39 @@
+{
+  "build-and-test": {
+    "sensors": [
+      "sdl-coverage"
+    ],
+    "required_sections": [
+      "SDL Scan"
+    ],
+    "required_sections_created": true,
+    "fragments": [
+      {
+        "anchor": "end-of-steps",
+        "order": 140,
+        "hash": "f4d1e58c"
+      }
+    ]
+  },
+  "code-generation": {
+    "sensors": [
+      "sdl-coverage"
+    ],
+    "required_sections": [
+      "SDL Scan"
+    ],
+    "required_sections_created": true,
+    "fragments": [
+      {
+        "anchor": "after-step:3",
+        "order": 100,
+        "hash": "7c3a5d23"
+      },
+      {
+        "anchor": "end-of-steps",
+        "order": 100,
+        "hash": "a972e244"
+      }
+    ]
+  }
+}

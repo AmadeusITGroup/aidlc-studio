@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "eve-sdl-preflight",
+      "trigger": "SessionStart",
+      "description": "On session start, verify SDL prerequisites and print AGENT DIRECTIVES to surface to the user. Logic lives in eve-sdl-preflight.sh (plain sh, no bun) so it fires even when bun is missing; NEVER blocks (SessionStart cannot block — its stdout is injected into agent context). It checks (A) bun + eve are installed and on PATH (the PreToolUse eve-sdl-gate is what hard-blocks if not), and (B) AMAIISDOM credentials for eve's opengrep scanner: a hook has no TTY so eve cannot prompt here, so when no credentials are stored it directs the user to run `eve credentials amaiisdom <username>` THEMSELVES in the terminal, where eve prompts securely and the agent never sees the password (non-blocking — the local secrets scanner still enforces; only opengrep is skipped until creds are set).",
+      "action": { "type": "command", "command": "sh .kiro/hooks/eve-sdl-preflight.sh" }
+    }
+  ]
+}

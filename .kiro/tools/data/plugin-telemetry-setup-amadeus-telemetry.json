@@ -1,0 +1,18 @@
+{
+  "plugin": "amadeus-telemetry",
+  "harness": "kiro-ide",
+  "appliedAt": "2026-10-23T06:38:22.818Z",
+  "files": {
+    ".kiro/sensors/aidlc-amadeus-telemetry.md": "24b6cc8cceeefe14db3b1d9de25fef704a4da33d88d61b2f0155f28015eb40f4",
+    ".kiro/tools/aidlc-sensor-amadeus-telemetry.ts": "1eaaf4e65a541c23a0e60b35aeb278a8cf674ec5cca1ab6d79cfea5bf5cc4772",
+    ".kiro/tools/amadeus-telemetry-report.ts": "15173c4b5af772b0226eed6ca2b0d91d6e5942dee619d538be8f23e2271f3b7a",
+    ".kiro/hooks/aidlc-amadeus-telemetry-reconcile.ts": "aeb68c578b5d526f5564384931d0556114ecc34cc0e1184b2cb16f9be4d065dc",
+    ".kiro/hooks/amadeus-telemetry.json": "dbf684538a050003767bf8d07de055fb855e9cb5a4df88a89dcea843af420342"
+  },
+  "created": [
+    ".kiro/hooks/aidlc-amadeus-telemetry-reconcile.ts",
+    ".kiro/hooks/amadeus-telemetry.json"
+  ],
+  "merges": [],
+  "compiledAt": "2026-10-23T06:38:22.818Z"
+}

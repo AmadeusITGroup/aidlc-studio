@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "amadeus-telemetry",
+  "files": [
+    {
+      "path": ".kiro/sensors/aidlc-amadeus-telemetry.md",
+      "sha256": "sha256:24b6cc8cceeefe14db3b1d9de25fef704a4da33d88d61b2f0155f28015eb40f4"
+    },
+    {
+      "path": ".kiro/tools/aidlc-sensor-amadeus-telemetry.ts",
+      "sha256": "sha256:1eaaf4e65a541c23a0e60b35aeb278a8cf674ec5cca1ab6d79cfea5bf5cc4772"
+    },
+    {
+      "path": ".kiro/tools/amadeus-telemetry-report.ts",
+      "sha256": "sha256:15173c4b5af772b0226eed6ca2b0d91d6e5942dee619d538be8f23e2271f3b7a"
+    }
+  ]
+}

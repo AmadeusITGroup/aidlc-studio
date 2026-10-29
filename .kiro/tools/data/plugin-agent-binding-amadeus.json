@@ -1,0 +1,96 @@
+{
+  "plugin": "amadeus",
+  "version": 1,
+  "appliedAt": "2026-10-23T06:38:20.776Z",
+  "stages": [
+    {
+      "slug": "contract-design",
+      "file": ".kiro/aidlc-common/stages/inception/contract-design.md",
+      "edits": [
+        {
+          "old": "  - aidlc-aws-platform-agent",
+          "new": "  - amadeus-platform-agent"
+        }
+      ],
+      "preHash": "c4c66d5ba05d0f4485b1763255c85c1eaa9975c59f2d5165b99626f91c905b2b",
+      "postHash": "1f8e7716acbcad4d173501a8a1e07c7b82be2b2a1b0ec39ae22c95ff3f3175eb"
+    },
+    {
+      "slug": "domain-design",
+      "file": ".kiro/aidlc-common/stages/inception/domain-design.md",
+      "edits": [
+        {
+          "old": "  - aidlc-aws-platform-agent",
+          "new": "  - amadeus-platform-agent"
+        }
+      ],
+      "preHash": "804e5b36a1bc54039c53d1d767cb33698c5ae2706cb004fc819fce655434f17a",
+      "postHash": "b4ac6491fb76875005b2156878d26b82eac3cafb7c6f657e7ca40ffbc941d32b"
+    },
+    {
+      "slug": "environment-provisioning",
+      "file": ".kiro/aidlc-common/stages/operation/environment-provisioning.md",
+      "edits": [
+        {
+          "old": "lead_agent: aidlc-aws-platform-agent",
+          "new": "lead_agent: amadeus-platform-agent"
+        }
+      ],
+      "preHash": "cf975cca9ef300fcbd08d05040de8ef0208cd90b5d1c38b9be97e61a39e4ef38",
+      "postHash": "3a428ba1bcf60886a634a1e0ef1cb91ad66730d97fa41dbe0858710cbebe75a6"
+    },
+    {
+      "slug": "feasibility",
+      "file": ".kiro/aidlc-common/stages/ideation/feasibility.md",
+      "edits": [
+        {
+          "old": "  - aidlc-aws-platform-agent",
+          "new": "  - amadeus-platform-agent"
+        }
+      ],
+      "preHash": "e7efff550d6e1391129be28a0db9a1e564011dd262b246967bd201192e45301e",
+      "postHash": "90cc6e3107994193f22c82517fb68ae2bed44c837e50b2cb37b60b82fa5495c1"
+    },
+    {
+      "slug": "feedback-optimization",
+      "file": ".kiro/aidlc-common/stages/operation/feedback-optimization.md",
+      "edits": [
+        {
+          "old": "  - aidlc-aws-platform-agent",
+          "new": "  - amadeus-platform-agent"
+        }
+      ],
+      "preHash": "890b6122f178a4c830d5bc127e73f25663c11398b54355ed538cddd0311a64f6",
+      "postHash": "60d63e1a9b956c99c4d7015e6f3901c5cdbbafa37159138bae50b30e7f82860e"
+    },
+    {
+      "slug": "infrastructure-design",
+      "file": ".kiro/aidlc-common/stages/construction/infrastructure-design.md",
+      "edits": [
+        {
+          "old": "lead_agent: aidlc-aws-platform-agent",
+          "new": "lead_agent: amadeus-platform-agent"
+        }
+      ],
+      "preHash": "ab0c4fee09562803c40c68e469dfed2dd7ea727057d05b3018d957afd305329c",
+      "postHash": "303243a443208a612e75ce259f8cbc7b00dd5eaf776c21ab80e6c03da2520ff6"
+    },
+    {
+      "slug": "nfr-design",
+      "file": ".kiro/aidlc-common/stages/construction/nfr-design.md",
+      "edits": [
+        {
+          "old": "  - aidlc-aws-platform-agent",
+          "new": "  - amadeus-platform-agent"
+        }
+      ],
+      "preHash": "d25266115be2a887b622f44d895a2954fc1d4a838a5c58ef1d758d67520ea978",
+      "postHash": "094a8a9f960807174cc6c1ec8010d6e105cb0e74d54510622185ac077e3e2fb2"
+    }
+  ],
+  "stageTable": {
+    "file": ".kiro/skills/aidlc/SKILL.md",
+    "preHash": "e891803448d4e71458e7264c47accf43059eac3555d978cc44d1d3930ace7072",
+    "postHash": "b5e5e80114e9f02ebe5dbe090b0def06e5002e7304faa320071cf50a2692b276"
+  }
+}
