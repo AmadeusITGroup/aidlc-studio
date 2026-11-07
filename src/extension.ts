@@ -50,14 +50,16 @@ function activateInternal(context: vscode.ExtensionContext): void {
   // Restore the variant that was active in the previous session (or auto-detect
   // from workspace files). Must complete before version checks and loadStatus()
   // so all operations target the correct repo from the start.
-  const updateChecker = new UpdateChecker(outputChannel, ruleLoader.variant);
+  const updateChecker = new UpdateChecker(outputChannel, ruleLoader.variant, ruleLoader);
   // Track whether the extension is still active when the async restore finishes.
   let extensionActive = true;
   context.subscriptions.push({ dispose: () => { extensionActive = false; } });
   const variantRestored = ruleLoader.restoreVariant().then((variant) => {
     if (!extensionActive) { return; }
     updateChecker.setVariant(variant);
-    outputChannel.appendLine(`Active variant: ${variant.label} (${variant.installMethod})`);
+    outputChannel.appendLine(
+      `Active variant: ${variant.label} (${variant.installMethod}, channel=${variant.channel})`
+    );
   });
 
   // Initialize tree view providers

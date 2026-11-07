@@ -384,11 +384,6 @@
           "default": true,
           "description": "Show notification toasts on stage transitions."
         },
-        "amadeus-aidlc.updateRepoUrl": {
-          "type": "string",
-          "default": "https://github.com/Amadeus-xDLC/amadeus-aidlc",
-          "description": "Git repository URL used to check for and pull AIDLC rule updates."
-        },
         "amadeus-aidlc.autoCheckUpdates": {
           "type": "boolean",
           "default": true,

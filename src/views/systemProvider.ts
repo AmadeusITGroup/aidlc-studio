@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { UpdateChecker, VersionInfo } from '../services/updateChecker';
 import { RuleLoader } from '../services/ruleLoader';
 import { BunInstaller } from '../services/bunInstaller';
+import { readRepoAidlcVersion } from '../services/repoVersionReader';
 
 /**
  * System view — shows setup/health/bun/version status.
@@ -19,6 +20,7 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
   private bunInstalled: boolean | null = null;
   private bunVersion: string | null = null;
   private versionInfo: VersionInfo | null = null;
+  private repoVersion: string | null = null;
 
   constructor(
     private readonly ruleLoader: RuleLoader,
@@ -64,7 +66,7 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
    * arrive so the slow network lookups don't block the fast local status.
    */
   private async loadVersionInfo(forceVersionCheck: boolean): Promise<void> {
-    // AIDLC framework version — only relevant when set up.
+    // Row A — installed CLI version (variant + channel), only when set up.
     if (this.setupConfigured) {
       try {
         this.versionInfo = forceVersionCheck
@@ -76,6 +78,13 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     } else {
       this.versionInfo = null;
     }
+
+    // Row B — per-repo framework-rules version from .kiro/tools/aidlc-version.ts.
+    // Independent of the installed CLI; read as text (never executed). Swallow
+    // failures → null (rendered as "Not configured").
+    const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+    this.repoVersion = workspaceUri ? await readRepoAidlcVersion(workspaceUri) : null;
+
     this.refresh();
   }
 
@@ -94,6 +103,7 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     items.push(this.buildBunItem());
     items.push(this.buildHealthItem());
     items.push(this.buildVersionItem());
+    items.push(this.buildRepoVersionItem());
     items.push(this.buildAnalyticsItem());
     items.push(this.buildDocsItem());
 
@@ -230,17 +240,32 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     return item;
   }
 
+  /**
+   * Render a variant display id as a human label, e.g. "AWS", "Amadeus", or
+   * "Amadeus (Preview)". Shared by both the installed-CLI row and the AIDLC
+   * Framework (repo) row so the two read identically.
+   */
+  private variantLabel(variantDisplayId: VersionInfo['variantDisplayId']): string {
+    switch (variantDisplayId) {
+      case 'amadeus-preview': return 'Amadeus (Preview)';
+      case 'amadeus': return 'Amadeus';
+      case 'aws':
+      default: return 'AWS';
+    }
+  }
+
+  // Row A — Installed CLI (global aidlc binary): variant + channel + version.
   private buildVersionItem(): SystemItem {
-    // Setup not done — version is not applicable yet
+    // Setup not done — nothing installed to report yet.
     if (!this.setupConfigured) {
       const item = new SystemItem(
-        'AIDLC Version',
-        'Not available — set up first',
+        'Installed CLI',
+        'Not installed — set up first',
         new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('testing.iconFailed')),
         'system-version-na'
       );
       item.tooltip = new vscode.MarkdownString(
-        '**Version unavailable.**\n\nAIDLC is not installed yet, so there is no installed version to report.\n\n*Set up AIDLC first (see the Setup row above).*'
+        '**No AIDLC CLI detected.**\n\nThe globally-installed `aidlc` CLI (variant, channel, and version) is reported here.\n\n*Set up AIDLC first (see the Setup row above).*'
       );
       item.command = { command: 'amadeus-aidlc.setup', title: 'Set Up AIDLC' };
       return item;
@@ -248,27 +273,30 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
 
     if (!this.versionInfo) {
       const item = new SystemItem(
-        'AIDLC Version',
+        'Installed CLI',
         'Click to check',
         new vscode.ThemeIcon('question'),
         'system-version-unknown'
       );
-      item.tooltip = new vscode.MarkdownString('*Click to check for the latest AIDLC version.*');
+      item.tooltip = new vscode.MarkdownString(
+        '**Installed CLI**\n\nThe globally-installed `aidlc` CLI variant, channel, and version.\n\n*Click to check for the latest version.*'
+      );
       item.command = { command: 'amadeus-aidlc.checkForUpdates', title: 'Check for Updates' };
       return item;
     }
 
-    const { currentVersion, latestVersion, updateAvailable } = this.versionInfo;
+    const { currentVersion, latestVersion, updateAvailable, variantDisplayId } = this.versionInfo;
+    const variant = this.variantLabel(this.versionInfo.variantDisplayId);
 
     if (updateAvailable) {
       const item = new SystemItem(
         'Update Available',
-        `${currentVersion ?? '?'} → ${latestVersion} — Update Now`,
+        `${variant} ${currentVersion ?? '?'} → ${latestVersion} — Update Now`,
         new vscode.ThemeIcon('cloud-download', new vscode.ThemeColor('notificationsInfoIcon.foreground')),
         'system-update'
       );
       item.tooltip = new vscode.MarkdownString(
-        `**Update available**\n\n- Current: \`${currentVersion ?? 'unknown'}\`\n- Latest: \`${latestVersion}\`\n\n*Click to update now.*`
+        `**Update available** (${variantDisplayId})\n\n- Current: \`${currentVersion ?? 'unknown'}\`\n- Latest: \`${latestVersion}\`\n\n*Click to update now.*`
       );
       item.command = { command: 'amadeus-aidlc.updateRules', title: 'Update AIDLC Rules' };
       return item;
@@ -277,13 +305,13 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     // Could not determine the installed version — show Unknown with warning style
     if (!currentVersion) {
       const item = new SystemItem(
-        'AIDLC Version',
-        'Unknown — click to check',
+        'Installed CLI',
+        'Not installed',
         new vscode.ThemeIcon('warning', new vscode.ThemeColor('notificationsWarningIcon.foreground')),
         'system-version-unknown'
       );
       item.tooltip = new vscode.MarkdownString(
-        `**Installed version unknown.**\n\nCould not read the installed AIDLC version from this workspace.${latestVersion !== 'unknown' ? `\n\nLatest available: \`${latestVersion}\`` : ''}\n\n*Click to re-check.*`
+        `**Installed CLI version unknown.**\n\nCould not read the installed \`aidlc\` CLI version.${latestVersion !== 'unknown' ? `\n\nLatest available: \`${latestVersion}\`` : ''}\n\n*Click to re-check.*`
       );
       item.command = { command: 'amadeus-aidlc.checkForUpdates', title: 'Check for Updates' };
       return item;
@@ -291,15 +319,44 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
 
     // On latest version
     const item = new SystemItem(
-      'AIDLC Version',
-      `${currentVersion} (latest)`,
+      'Installed CLI',
+      `${variant} ${currentVersion}`,
       new vscode.ThemeIcon('verified-filled', new vscode.ThemeColor('testing.iconPassed')),
       'system-version-current'
     );
     item.tooltip = new vscode.MarkdownString(
-      `**AIDLC v${currentVersion}**\n\nYou are on the latest version.\n\n*Click to re-check.*`
+      `**Installed CLI: ${variant} \`${currentVersion}\`**\n\nThe globally-installed \`aidlc\` CLI.${latestVersion !== 'unknown' ? ` You are on the latest version.` : ''}\n\n*Click to re-check.*`
     );
     item.command = { command: 'amadeus-aidlc.checkForUpdates', title: 'Check for Updates' };
+    return item;
+  }
+
+  // Row B — AIDLC Framework: per-repo AIDLC framework-rules version read from
+  // .kiro/tools/aidlc-version.ts (the AIDLC_VERSION constant). This answers a
+  // different question from the installed CLI and can legitimately differ.
+  private buildRepoVersionItem(): SystemItem {
+    if (this.repoVersion) {
+      const item = new SystemItem(
+        'AIDLC Framework',
+        this.repoVersion,
+        new vscode.ThemeIcon('tag', new vscode.ThemeColor('charts.blue')),
+        'system-repo-version'
+      );
+      item.tooltip = new vscode.MarkdownString(
+        `**AIDLC Framework: \`${this.repoVersion}\`**\n\nThe AIDLC framework-rules version configured in this repo (\`AIDLC_VERSION\` in \`.kiro/tools/aidlc-version.ts\`).\n\nThis is the version of the rules in this project — distinct from the installed CLI above. The two can legitimately differ.`
+      );
+      return item;
+    }
+
+    const item = new SystemItem(
+      'AIDLC Framework',
+      'Not configured',
+      new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('descriptionForeground')),
+      'system-repo-version-na'
+    );
+    item.tooltip = new vscode.MarkdownString(
+      '**No repo framework-rules version.**\n\nThis repo has no readable `.kiro/tools/aidlc-version.ts` (`AIDLC_VERSION` constant). This is distinct from the installed CLI above.'
+    );
     return item;
   }
 }

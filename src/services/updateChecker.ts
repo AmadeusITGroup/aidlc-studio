@@ -1,13 +1,19 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { Shell } from './shell';
-import { AidlcVariant, getDefaultVariant } from './variants';
+import { AidlcVariant, describeVariant, getDefaultVariant } from './variants';
 import { aidlcBinaryCandidates } from './installCommands';
+import { readAidlcInstall } from './aidlcInstallReader';
+import { isPreviewVersion } from './variantDetector';
+import { RuleLoader } from './ruleLoader';
 
 export interface VersionInfo {
   currentVersion: string | null;
   latestVersion: string;
   updateAvailable: boolean;
+  /** Release channel of the active variant. */
+  channel: 'release' | 'preview';
+  /** Collapsed display id: 'aws' | 'amadeus' | 'amadeus-preview'. */
+  variantDisplayId: 'aws' | 'amadeus' | 'amadeus-preview';
   releaseUrl?: string;
   releaseName?: string;
   releaseNotes?: string;
@@ -21,7 +27,9 @@ export interface VersionInfo {
  * right repo/channel:
  *  - 'native-installer' variants (AWS)  → use `aidlc update` CLI command
  *  - 'repo-installer' / 'git-clone-copy' variants (Amadeus / custom)
- *      → git-clone the configured repo and copy files
+ *      → delegate to the SAME reinstall path setup uses
+ *        (RuleLoader.installViaRepoInstaller): clone the repo, run the
+ *        official installer script, with a dist-copy fallback.
  */
 export class UpdateChecker {
   private cachedVersionInfo: VersionInfo | null = null;
@@ -32,7 +40,15 @@ export class UpdateChecker {
     private readonly outputChannel: vscode.OutputChannel,
     /** The currently-installed variant. Defaults to the default variant when
      *  not yet set (before a workspace is configured). */
-    private activeVariant: AidlcVariant = getDefaultVariant()
+    private activeVariant: AidlcVariant = getDefaultVariant(),
+    /**
+     * Shared RuleLoader used to apply repo-based updates. The repo update path
+     * reuses the installer this loader runs for setup/reinstall, so an update
+     * is "basically a reinstall". Optional only so the version-check surface
+     * can be constructed without it; pullLatest() for a repo-based variant
+     * requires it.
+     */
+    private readonly ruleLoader?: RuleLoader
   ) { }
 
   /** Update the active variant when the user installs or switches. */
@@ -72,51 +88,103 @@ export class UpdateChecker {
       return this.checkNativeInstallerVersion(variant);
     }
 
-    // For repo-based variants: compare the local version file against the
-    // latest GitHub/git tag on the configured repo.
-    const config = vscode.workspace.getConfiguration('amadeus-aidlc');
-    const repoUrl = config.get<string>('updateRepoUrl', '').trim() || variant.repoUrl;
+    // For repo-based variants (Amadeus / custom): resolve the latest ONLY from
+    // the Artifactory feed, filtered to the active channel. Never fall back to
+    // a GitHub release or `git ls-remote`.
+    return this.checkAmadeusArtifactoryVersion(variant);
+  }
 
-    this.outputChannel.appendLine(`Checking for updates from: ${repoUrl}`);
+  // --- Private: Amadeus Artifactory path ---
 
-    const currentVersion = await this.getCurrentVersionFromFile();
-    const release = await this.getLatestRelease(repoUrl);
-    const latestVersion = release?.version ?? null;
+  /**
+   * Resolve the Amadeus variant's current + latest version. Current version
+   * comes from the on-disk install metadata (`amadeusVersion`, full string
+   * incl. the preview suffix), falling back to a FULL-string `aidlc --version`
+   * parse. Latest comes ONLY from the Artifactory feed, filtered to the active
+   * channel; any failure degrades `latest` to 'unknown'. This path NEVER
+   * consults GitHub releases or `git ls-remote`.
+   */
+  private async checkAmadeusArtifactoryVersion(variant: AidlcVariant): Promise<VersionInfo> {
+    const channel = variant.channel;
+    const displayId = describeVariant(variant);
 
-    const updateAvailable = latestVersion !== null
-      && currentVersion !== null
-      && latestVersion !== currentVersion;
+    // Current version: prefer on-disk metadata, else the full --version token.
+    const install = await readAidlcInstall().catch(() => null);
+    let currentVersion = install?.currentVersion ?? null;
+    if (!currentVersion) {
+      currentVersion = await this.getFullCurrentVersionFromBinary();
+    }
+
+    // Feed base: on-disk settings `release-base-url` preferred over the
+    // hardcoded constant.
+    const feedBase = install?.feedUrl ?? variant.artifactory?.versionFeedUrl ?? null;
+
+    let latestVersion = 'unknown';
+    if (feedBase) {
+      latestVersion = await this.resolveLatestFromFeed(feedBase, channel);
+    } else {
+      this.outputChannel.appendLine('No Artifactory feed base available; latest=unknown.');
+    }
+
+    const updateAvailable =
+      latestVersion !== 'unknown' && currentVersion !== null && latestVersion !== currentVersion;
 
     const info: VersionInfo = {
       currentVersion,
-      latestVersion: latestVersion ?? 'unknown',
+      latestVersion,
       updateAvailable,
-      releaseUrl: release?.url ?? `${repoUrl}/releases/latest`,
-      releaseName: release?.name,
-      releaseNotes: release?.notes,
-      publishedAt: release?.publishedAt,
+      channel,
+      variantDisplayId: displayId,
+      releaseUrl: feedBase ?? undefined,
     };
 
     this.cachedVersionInfo = info;
     this.lastChecked = Date.now();
 
     this.outputChannel.appendLine(
-      `Version check: current=${currentVersion ?? 'unknown'}, latest=${latestVersion ?? 'unknown'}, update=${updateAvailable}`
+      `Version check (${displayId}): current=${currentVersion ?? 'unknown'}, latest=${latestVersion}, update=${updateAvailable}`
     );
 
     return info;
   }
 
   /**
+   * Fetch the Artifactory version feed and pick the highest version on the
+   * active channel. Returns 'unknown' on ANY failure (network error,
+   * unparseable/HTML response, no matching tokens).
+   */
+  private async resolveLatestFromFeed(feedBase: string, channel: 'release' | 'preview'): Promise<string> {
+    try {
+      const { stdout } = await Shell.run(`curl -sSL "${feedBase}"`, { timeout: 15000 });
+      const tokens = stdout
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter((t) => /^\d+\.\d+\.\d+/.test(t));
+
+      const matching = tokens.filter((t) =>
+        channel === 'preview' ? isPreviewVersion(t) : !isPreviewVersion(t)
+      );
+      if (matching.length === 0) { return 'unknown'; }
+
+      return [...matching].sort((a, b) => compareFullVersion(b, a))[0];
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.outputChannel.appendLine(`Artifactory feed lookup failed: ${msg}`);
+      return 'unknown';
+    }
+  }
+
+  /**
    * Update AIDLC to the latest release.
    * - Native-installer variants (AWS): delegates to `aidlc update`.
-   * - Repo-based variants: git-clones and copies files.
+   * - Repo-based variants: delegates to the reinstall path
+   *   (RuleLoader.installViaRepoInstaller) — "update is basically a reinstall".
    */
   async pullLatest(): Promise<boolean> {
     if (this.activeVariant.installMethod === 'native-installer') {
       return this.updateViaNativeCli();
     }
-    return this.updateViaGitClone();
+    return this.updateViaRepoInstaller();
   }
 
   // --- Private: native-installer (AWS) path ---
@@ -140,6 +208,8 @@ export class UpdateChecker {
       currentVersion,
       latestVersion: latestVersion ?? 'unknown',
       updateAvailable,
+      channel: variant.channel,
+      variantDisplayId: describeVariant(variant),
       releaseUrl: release?.url ?? `${repoUrl}/releases/latest`,
       releaseName: release?.name,
       releaseNotes: release?.notes,
@@ -208,15 +278,26 @@ export class UpdateChecker {
 
   // --- Private: repo-based (Amadeus / custom) path ---
 
-  private async updateViaGitClone(): Promise<boolean> {
+  /**
+   * Update a repo-based variant by reusing the SAME reinstall path setup uses.
+   * Delegates to RuleLoader.installViaRepoInstaller(), which clones the
+   * configured repo (throwing the typed RepoAccessError on auth/not-found),
+   * runs the official installer script, and falls back to the legacy dist-copy
+   * only when that script is absent. This replaces the former blind dist-copy
+   * that assumed a `dist/<harness>/.kiro` layout the Amadeus repo does not have.
+   */
+  private async updateViaRepoInstaller(): Promise<boolean> {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
       throw new Error('No workspace folder');
     }
+    if (!this.ruleLoader) {
+      throw new Error('Repo-based update requires a RuleLoader; none was provided.');
+    }
 
-    const variant = this.activeVariant;
-    const config = vscode.workspace.getConfiguration('amadeus-aidlc');
-    const repoUrl = config.get<string>('updateRepoUrl', '').trim() || variant.repoUrl;
+    // Keep the loader's variant in lockstep with ours so it clones the correct
+    // repo/branch/harness for whichever variant is active.
+    this.ruleLoader.setVariant(this.activeVariant);
 
     return vscode.window.withProgress(
       {
@@ -225,44 +306,24 @@ export class UpdateChecker {
         cancellable: false,
       },
       async (progress) => {
-        const branch = variant.branch;
-        const tempDir = path.join(workspaceFolder.uri.fsPath, '.aidlc-update-tmp');
+        progress.report({ message: 'Reinstalling latest version...', increment: 40 });
+        this.outputChannel.appendLine(
+          `Reinstalling ${this.activeVariant.label} from ${this.activeVariant.repoUrl} ` +
+          `(${this.activeVariant.branch})`
+        );
 
-        try {
-          await Shell.removeDir(tempDir);
+        // installViaRepoInstaller clones, runs the official installer (with a
+        // dist-copy fallback), and cleans up its own temp clone. Any
+        // RepoAccessError propagates so the caller can show the friendly
+        // "you don't have access" message.
+        await this.ruleLoader!.installViaRepoInstaller(workspaceFolder.uri);
 
-          progress.report({ message: 'Downloading latest version...', increment: 30 });
-          this.outputChannel.appendLine(`Cloning ${repoUrl} (${branch}) to ${tempDir}`);
+        progress.report({ message: 'Verifying...', increment: 60 });
+        this.cachedVersionInfo = null;
+        await this.checkForUpdates();
 
-          await Shell.run(`git clone --depth 1 --branch ${branch} "${repoUrl}" "${tempDir}"`, {
-            cwd: workspaceFolder.uri.fsPath,
-            timeout: 120000,
-          });
-
-          progress.report({ message: 'Installing updated rules...', increment: 30 });
-
-          const distDir = path.join(tempDir, ...variant.distPath.split('/'));
-          const kiroDir = path.join(workspaceFolder.uri.fsPath, '.kiro');
-          const aidlcDir = path.join(workspaceFolder.uri.fsPath, 'aidlc');
-
-          await Shell.copyDirContents(path.join(distDir, '.kiro'), kiroDir);
-          await Shell.copyDirContents(path.join(distDir, 'aidlc'), aidlcDir);
-
-          progress.report({ message: 'Cleaning up...', increment: 20 });
-          await Shell.removeDir(tempDir);
-
-          progress.report({ message: 'Verifying...', increment: 20 });
-          this.cachedVersionInfo = null;
-          await this.checkForUpdates();
-
-          this.outputChannel.appendLine('Update completed successfully.');
-          return true;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          this.outputChannel.appendLine(`Update failed: ${message}`);
-          await Shell.removeDir(tempDir);
-          throw new Error(`Update failed: ${message}`);
-        }
+        this.outputChannel.appendLine('Update completed successfully.');
+        return true;
       }
     );
   }
@@ -293,41 +354,37 @@ export class UpdateChecker {
     return null;
   }
 
-  /** Read version from the workspace's version file (repo-based variants). */
-  private async getCurrentVersionFromFile(): Promise<string | null> {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) { return null; }
+  /**
+   * Ask the installed aidlc binary for its FULL version string (Amadeus path).
+   * Unlike getCurrentVersionFromBinary (numeric semver only), this captures the
+   * whole token after `aidlc `, including any `-preview...` / pre-release tail
+   * (e.g. `2.10.0-1a.1.1.0-preview.3`). Tries known absolute paths, then bare
+   * PATH.
+   */
+  private async getFullCurrentVersionFromBinary(): Promise<string | null> {
+    const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+    const candidates = aidlcBinaryCandidates(process.platform, home);
 
-    const versionFilePaths = [
-      path.join(workspaceFolder.uri.fsPath, '.kiro', 'tools', 'data', 'version.json'),
-      path.join(workspaceFolder.uri.fsPath, '.kiro', 'VERSION'),
-      path.join(workspaceFolder.uri.fsPath, 'aidlc', 'VERSION'),
-    ];
+    const parseFull = (stdout: string): string | null => {
+      // Capture the numeric semver plus any contiguous pre-release/preview tail.
+      const match = stdout.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+      return match ? match[1] : null;
+    };
 
-    for (const versionPath of versionFilePaths) {
+    for (const bin of candidates) {
       try {
-        const content = await vscode.workspace.fs.readFile(vscode.Uri.file(versionPath));
-        const text = Buffer.from(content).toString('utf-8').trim();
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed.version) { return parsed.version; }
-        } catch {
-          if (text.match(/^\d+\.\d+\.\d+/)) { return text.split('\n')[0].trim(); }
-        }
-      } catch { /* file doesn't exist */ }
+        await vscode.workspace.fs.stat(vscode.Uri.file(bin));
+        const { stdout } = await Shell.run(`"${bin}" --version`, { timeout: 10000 });
+        const v = parseFull(stdout);
+        if (v) { return v; }
+      } catch { /* try next */ }
     }
 
-    // Fallback: bun tool
     try {
-      const workspacePath = workspaceFolder.uri.fsPath;
-      const toolPath = path.join(workspacePath, '.kiro', 'tools', 'aidlc-utility.ts');
-      const { stdout } = await Shell.run(`bun "${toolPath}" version`, {
-        cwd: workspacePath,
-        timeout: 10000,
-      });
-      const match = stdout.match(/(\d+\.\d+\.\d+)/);
-      if (match) { return match[1]; }
-    } catch { /* tool not available */ }
+      const { stdout } = await Shell.run('aidlc --version', { timeout: 10000 });
+      const v = parseFull(stdout);
+      if (v) { return v; }
+    } catch { /* not on PATH */ }
 
     return null;
   }
@@ -381,4 +438,34 @@ export class UpdateChecker {
     }
     return null;
   }
+}
+
+/**
+ * Compare two FULL version strings (numeric semver plus any pre-release /
+ * preview tail). The numeric semver is compared first; ties fall back to a
+ * lexicographic compare of the pre-release tail (a build WITH a tail sorts
+ * below the same numeric version without one, matching semver precedence).
+ */
+function compareFullVersion(a: string, b: string): number {
+  const semver = (v: string): number[] => {
+    const m = v.match(/(\d+)\.(\d+)\.(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
+  };
+  const tail = (v: string): string => {
+    const m = v.match(/\d+\.\d+\.\d+(?:[-+]([0-9A-Za-z.-]+))?/);
+    return m?.[1] ?? '';
+  };
+
+  const pa = semver(a);
+  const pb = semver(b);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) { return pa[i] - pb[i]; }
+  }
+
+  const ta = tail(a);
+  const tb = tail(b);
+  // No tail outranks a tail at the same numeric version (semver precedence).
+  if (ta === '' && tb !== '') { return 1; }
+  if (ta !== '' && tb === '') { return -1; }
+  return ta.localeCompare(tb);
 }

@@ -7,6 +7,8 @@ import {
   buildNativeInstallCommand,
   buildRepoInstallerCommand,
 } from './installCommands';
+import { readAidlcInstall } from './aidlcInstallReader';
+import { classifyVariant } from './variantDetector';
 
 /**
  * Thrown when a variant's repository can't be reached because the user lacks
@@ -28,6 +30,7 @@ export class RepoAccessError extends Error {
 export class RuleLoader {
   private clonedRepoPath: string | null = null;
   private activeVariant: AidlcVariant = getDefaultVariant();
+  private activeChannel: 'release' | 'preview' = 'release';
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -46,61 +49,113 @@ export class RuleLoader {
    */
   setVariant(variant: AidlcVariant): void {
     this.activeVariant = variant;
+    this.activeChannel = variant.channel;
     // Persist the underlying id; 'custom' is a transient overlay, not a stored id.
     const persistId = variant.id === 'custom' ? 'aws' : variant.id;
     this.context.workspaceState.update('aidlc.variantId', persistId);
+    this.context.workspaceState.update('aidlc.channel', variant.channel);
+  }
+
+  /**
+   * Stamp the resolved channel onto a variant so `loader.variant.channel`
+   * reflects what restoreVariant() decided (the catalog entries default to
+   * 'release').
+   */
+  private withChannel(variant: AidlcVariant, channel: 'release' | 'preview'): AidlcVariant {
+    return { ...variant, channel };
   }
 
   /**
    * Restore the variant on extension activation so version checks, updates, and
-   * doctor commands all target the right repo for an already-configured workspace.
+   * doctor commands all target the right repo/channel for an already-configured
+   * workspace.
    *
    * Strategy (in priority order):
-   *  1. Persisted variant ID in workspaceState  — set by setVariant() at install.
-   *  2. File-based auto-detection from the workspace  — handles workspaces that
-   *     were configured before this persist logic existed:
-   *     - If `.kiro/tools/aidlc-utility.ts` exists  → Amadeus / custom variant
-   *       (AWS native install does NOT ship this file).
-   *     - If the `aidlc` binary is reachable on PATH  → AWS native variant.
-   *     - Otherwise fall back to the default (AWS).
+   *  1. AUTHORITATIVE — on-disk install metadata (`readAidlcInstall()`): the
+   *     installer's own `aidlc.settings.json` / `versions/<ver>/version.json`
+   *     carry the real variant + channel and keep working even when the `aidlc`
+   *     binary can't be executed (e.g. the F5 host). This OVERRIDES a stale
+   *     persisted value and reconciles the cache so it self-heals.
+   *  2. Persisted variant id + channel in workspaceState (set by setVariant()).
+   *  3. File heuristic: `.kiro/tools/aidlc-utility.ts` present → Amadeus
+   *     (release channel); AWS native does not ship this file.
+   *  4. Binary `--version` probe: classify the stdout (amadeus/preview vs a
+   *     plain awslabs semver → AWS).
+   *  5. Default AWS/release (no persistence).
    *
-   * Returns the resolved variant so callers (extension.ts) can sync it into
-   * other services (e.g. UpdateChecker) immediately.
+   * Returns the resolved variant (channel-stamped) so callers (extension.ts)
+   * can sync it into other services (e.g. UpdateChecker) immediately.
    */
   async restoreVariant(): Promise<AidlcVariant> {
-    // 1. Persisted ID
-    const persistedId = this.context.workspaceState.get<string>('aidlc.variantId');
-    if (persistedId) {
-      this.activeVariant = getVariant(persistedId);
+    // 1. AUTHORITATIVE: on-disk install metadata.
+    const install = await readAidlcInstall();
+    if (install) {
+      this.setResolved(install.variantId, install.channel, 'on-disk install metadata');
       return this.activeVariant;
     }
 
-    // 2. File-based auto-detection from the workspace files
+    // 2. Persisted id + channel.
+    const persistedId = this.context.workspaceState.get<string>('aidlc.variantId');
+    if (persistedId) {
+      const channel = this.context.workspaceState.get<'release' | 'preview'>('aidlc.channel') ?? 'release';
+      this.activeVariant = this.withChannel(getVariant(persistedId), channel);
+      this.activeChannel = channel;
+      this.outputChannel?.appendLine(
+        `Variant resolved from persisted workspaceState: ${persistedId}/${channel}`
+      );
+      return this.activeVariant;
+    }
+
+    // 3. File heuristic: the bun tool entry point marks an Amadeus/custom clone.
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder) {
-      // Amadeus/custom: presence of the bun tool entry point.
-      // AWS native install does NOT ship aidlc-utility.ts, so its absence
-      // means AWS (or an unconfigured workspace).
       const bunToolUri = vscode.Uri.joinPath(
         workspaceFolder.uri, '.kiro', 'tools', 'aidlc-utility.ts'
       );
       try {
         await vscode.workspace.fs.stat(bunToolUri);
-        // bun tool found → Amadeus. Persist so next activation is instant.
-        this.activeVariant = getVariant('amadeus');
-        this.context.workspaceState.update('aidlc.variantId', this.activeVariant.id);
+        this.setResolved('amadeus', 'release', 'workspace file heuristic (aidlc-utility.ts)');
         return this.activeVariant;
-      } catch { /* not found — not an Amadeus install, fall through to AWS */ }
+      } catch { /* not found — not an Amadeus clone, fall through */ }
     }
 
-    // 3. Default: AWS native install (or unconfigured workspace).
-    // No persistence here — only write to workspaceState once the variant is
-    // confirmed by an actual install.
-    return this.activeVariant; // already getDefaultVariant() (aws)
+    // 4. Binary `--version` probe (bare PATH).
+    try {
+      const { stdout } = await Shell.run('aidlc --version', { timeout: 10000 });
+      const classified = classifyVariant(stdout, '');
+      if (classified.variantId === 'amadeus') {
+        this.setResolved('amadeus', classified.channel, 'binary --version probe');
+        return this.activeVariant;
+      }
+      // Plain awslabs semver → AWS default (no persistence).
+      this.outputChannel?.appendLine('Variant resolved to AWS from binary --version probe');
+    } catch { /* binary not runnable */ }
+
+    // 5. Default: AWS/release (or unconfigured workspace). No persistence.
+    this.outputChannel?.appendLine('Variant resolved to AWS default (no signal matched)');
+    return this.activeVariant; // already getDefaultVariant() (aws/release)
+  }
+
+  /**
+   * Apply a resolved variant id + channel: stamp the active variant, reconcile
+   * the persisted cache (both keys), and log which signal won.
+   */
+  private setResolved(
+    variantId: 'aws' | 'amadeus',
+    channel: 'release' | 'preview',
+    signal: string
+  ): void {
+    this.activeVariant = this.withChannel(getVariant(variantId), channel);
+    this.activeChannel = channel;
+    this.context.workspaceState.update('aidlc.variantId', variantId);
+    this.context.workspaceState.update('aidlc.channel', channel);
+    this.outputChannel?.appendLine(
+      `Variant resolved from ${signal}: ${variantId}/${channel}`
+    );
   }
 
   get variant(): AidlcVariant {
-    return this.activeVariant;
+    return this.withChannel(this.activeVariant, this.activeChannel);
   }
 
   /**
@@ -210,29 +265,41 @@ export class RuleLoader {
   }
 
   /**
-   * Check if the workspace has a working AIDLC framework installed.
-   * Looks for the skill file that makes /aidlc work.
+   * Check if AIDLC is available. Capability-based: configured when EITHER the
+   * in-workspace clone-copy layout exists (skills + memory) OR a resolvable
+   * `aidlc` binary/metadata reports a version. This keeps the status correct
+   * for native-installer users whose framework lives outside the workspace.
    */
   async isWorkspaceConfigured(): Promise<boolean> {
+    // 1. In-workspace clone-copy layout.
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-      return false;
+    if (workspaceFolder) {
+      const skillUri = vscode.Uri.joinPath(
+        workspaceFolder.uri, '.kiro', 'skills', 'aidlc', 'SKILL.md'
+      );
+      const shellUri = vscode.Uri.joinPath(
+        workspaceFolder.uri, 'aidlc', 'spaces', 'default', 'memory'
+      );
+      try {
+        await vscode.workspace.fs.stat(skillUri);
+        await vscode.workspace.fs.stat(shellUri);
+        return true;
+      } catch { /* no clone-copy layout — fall through to the binary check */ }
     }
 
-    const skillUri = vscode.Uri.joinPath(
-      workspaceFolder.uri, '.kiro', 'skills', 'aidlc', 'SKILL.md'
-    );
-    const shellUri = vscode.Uri.joinPath(
-      workspaceFolder.uri, 'aidlc', 'spaces', 'default', 'memory'
-    );
-
+    // 2. On-disk install metadata reports a version.
     try {
-      await vscode.workspace.fs.stat(skillUri);
-      await vscode.workspace.fs.stat(shellUri);
-      return true;
-    } catch {
-      return false;
-    }
+      const install = await readAidlcInstall();
+      if (install?.currentVersion) { return true; }
+    } catch { /* no metadata */ }
+
+    // 3. A bare-PATH binary reports a semver.
+    try {
+      const { stdout } = await Shell.run('aidlc --version', { timeout: 10000 });
+      if (/\d+\.\d+\.\d+/.test(stdout)) { return true; }
+    } catch { /* not on PATH */ }
+
+    return false;
   }
 
   /**

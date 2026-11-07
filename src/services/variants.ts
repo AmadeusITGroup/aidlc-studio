@@ -56,6 +56,18 @@ export interface AidlcVariant {
    * fallback when the host IDE's harness isn't supported by the variant.
    */
   supportedHarnesses: AidlcHarness[];
+  /**
+   * Release channel this variant is tracking: 'release' (stable) or
+   * 'preview'. Resolved at runtime from the on-disk install metadata /
+   * `--version` string; the catalog entries default to 'release'.
+   */
+  channel: 'release' | 'preview';
+  /**
+   * For the Amadeus (Artifactory) variant: the hardcoded feed base used to
+   * resolve the latest version when the on-disk `aidlc.settings.json`
+   * `release-base-url` is unavailable. AWS has none.
+   */
+  artifactory?: { versionFeedUrl: string };
 }
 
 export const AIDLC_VARIANTS: AidlcVariant[] = [
@@ -74,6 +86,7 @@ export const AIDLC_VARIANTS: AidlcVariant[] = [
     distPath: 'dist/kiro-ide',
     // AWS ships a VS Code (copilot) harness in addition to Kiro.
     supportedHarnesses: ['kiro-ide', 'copilot'],
+    channel: 'release',
   },
   {
     id: 'amadeus',
@@ -86,6 +99,13 @@ export const AIDLC_VARIANTS: AidlcVariant[] = [
     distPath: 'dist/kiro-ide',
     // Amadeus is Kiro-only today (kiro-ide + Kiro CLI). No VS Code harness.
     supportedHarnesses: ['kiro-ide', 'kiro'],
+    channel: 'release',
+    // Fallback Artifactory feed base (ending in `/cli`) used by UpdateChecker
+    // when the on-disk aidlc.settings.json `release-base-url` is unavailable.
+    artifactory: {
+      versionFeedUrl:
+        'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli',
+    },
   },
 ];
 
@@ -112,9 +132,29 @@ export function getVariant(variantId: string): AidlcVariant {
       repoUrl: customSource,
       // A custom fork is assumed to follow the Amadeus-style Kiro layout.
       supportedHarnesses: ['kiro-ide', 'kiro'],
+      channel: 'release',
     };
   }
   return variant;
+}
+
+/**
+ * Collapse a variant's id + channel into one of the three display states the
+ * UI and version checks share:
+ *  - `aws`             → AWS (or default) variant.
+ *  - `amadeus-preview` → Amadeus variant tracking the preview channel.
+ *  - `amadeus`         → Amadeus (or custom) variant on the release channel.
+ *
+ * Pure: a single source of truth for the display id, used by both
+ * UpdateChecker (VersionInfo.variantDisplayId) and SystemProvider.
+ */
+export function describeVariant(
+  variant: Pick<AidlcVariant, 'id' | 'channel'>
+): 'aws' | 'amadeus' | 'amadeus-preview' {
+  if (variant.id === 'aws' || variant.id === DEFAULT_VARIANT_ID) {
+    return 'aws';
+  }
+  return variant.channel === 'preview' ? 'amadeus-preview' : 'amadeus';
 }
 
 export function getDefaultVariant(): AidlcVariant {

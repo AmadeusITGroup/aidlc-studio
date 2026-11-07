@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { UpdateChecker } from '../services/updateChecker';
 import { AidlcCli } from '../services/aidlcCli';
+import { RepoAccessError } from '../services/ruleLoader';
 
 export class UpdateCommand {
   constructor(
@@ -106,6 +107,18 @@ export class UpdateCommand {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.outputChannel.appendLine(`Update failed: ${message}`);
+
+      // No access to a private/SSO variant repo (e.g. a public user updating
+      // the Amadeus internal fork). Show the same friendly "you don't have
+      // access" message setup uses instead of raw git output.
+      if (error instanceof RepoAccessError) {
+        vscode.window.showErrorMessage(
+          `You don't have access to "${error.variantLabel}". This version is restricted — ` +
+          `make sure you're on the required network and signed in, or choose the open-source version instead.`
+        );
+        return;
+      }
+
       vscode.window.showErrorMessage(`AIDLC update failed: ${message}`);
     }
   }
