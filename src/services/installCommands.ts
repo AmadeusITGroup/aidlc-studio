@@ -56,9 +56,42 @@ export function aidlcBinaryCandidates(platform: NodeJS.Platform, home: string): 
 }
 
 /**
+ * Build the Amadeus 2.10+ MACHINE-SETUP command: it installs the `aidlc` CLI
+ * onto the machine only (no project is touched). The project is configured
+ * afterwards with `aidlc config --harness <h>` (see RuleLoader.runAidlcConfig).
+ *
+ * This is the ONE place every Amadeus machine-installer assumption lives, so
+ * correcting it against a real Amadeus 2.10+ machine means editing only here.
+ *
+ * ASSUMPTION pending confirmation on a real Amadeus 2.10+ machine
+ * (the Amadeus repo is SSO-gated; its install-aidlc.ps1 could not be read):
+ *   1. The machine installer is `install-aidlc.ps1` (Windows) /
+ *      `install-aidlc.sh` (Unix) and is invoked with `-SkipCredentials`
+ *      (Windows) / `--skip-credentials` (Unix) to install the CLI only.
+ *   2. `scriptPathOrUrl` is the location of that script — whether it is a
+ *      remote-pipeable URL or a local path obtained via an SSO clone first is
+ *      NOT yet verified. This builder only shapes the invocation; HOW the
+ *      script is obtained is the caller's concern (RuleLoader).
+ */
+export function buildAmadeusMachineSetupCommand(
+  platform: NodeJS.Platform,
+  scriptPathOrUrl: string
+): string {
+  if (platform === 'win32') {
+    return `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPathOrUrl}" -SkipCredentials`;
+  }
+  return `sh "${scriptPathOrUrl}" --skip-credentials`;
+}
+
+/**
  * Build the Amadeus official one-click repo-installer invocation for the given
  * platform. The script is a LOCAL file inside the cloned repo (not a remote
  * URL), so Windows runs it with `-File` and Unix invokes it with `sh`.
+ *
+ * LEGACY (AI-DLC 2.5 layout): the `-Target`/`-Harness` flags are legacy-only on
+ * the 2.10+ installer. Retained ONLY for the explicit git-clone-copy custom
+ * fork path; the Amadeus variant no longer uses this (see
+ * buildAmadeusMachineSetupCommand).
  */
 export function buildRepoInstallerCommand(
   platform: NodeJS.Platform,

@@ -86,7 +86,13 @@ export class SetupCommand {
               progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
               await this.ruleLoader.installViaNativeInstaller(workspaceFolder.uri);
               break;
+            case 'amadeus-cli':
+              // Amadeus 2.10+ CLI model: machine installer, then `aidlc config`.
+              progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
+              await this.ruleLoader.installViaAmadeusCli(workspaceFolder.uri);
+              break;
             case 'repo-installer':
+              // LEGACY (2.5) path — retained but no catalog variant uses it.
               progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
               await this.ruleLoader.installViaRepoInstaller(workspaceFolder.uri);
               break;

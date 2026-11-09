@@ -4,6 +4,7 @@ import { Shell } from './shell';
 import { AidlcVariant, getDefaultVariant, getVariant, resolveHarness } from './variants';
 import {
   aidlcBinaryCandidates,
+  buildAmadeusMachineSetupCommand,
   buildNativeInstallCommand,
   buildRepoInstallerCommand,
 } from './installCommands';
@@ -189,6 +190,59 @@ export class RuleLoader {
 
     // Configure the single harness that matches the host IDE, clamped to what
     // this variant actually ships.
+    const { harness, fellBack } = resolveHarness(variant);
+    if (fellBack) {
+      this.outputChannel?.appendLine(
+        `Note: ${variant.label} does not provide a harness for this IDE; installing "${harness}" instead.`
+      );
+    }
+    this.outputChannel?.appendLine(`Configuring harness (aidlc config --harness ${harness})...`);
+    await this.runAidlcConfig(workspaceUri, harness);
+  }
+
+  /**
+   * Install the Amadeus variant using the 2.10+ CLI-driven model, which mirrors
+   * the AWS native path: run the machine installer to put the `aidlc` CLI on
+   * the machine (no project touched), then `aidlc config --harness <harness>`
+   * to configure the project. This replaces the old clone-and-copy-dist flow,
+   * which assumed the retired 2.5 `dist/<harness>/` layout the 2.10+ repo no
+   * longer ships.
+   *
+   * The ONLY uncertain, SSO-gated value is the machine-installer invocation,
+   * isolated behind buildAmadeusMachineSetupCommand (install-aidlc.ps1
+   * -SkipCredentials). The project-config step reuses runAidlcConfig verbatim.
+   *
+   * ASSUMPTION pending confirmation on a real Amadeus 2.10+ machine: the
+   * machine installer is remote-pipeable from variant.installScriptUrl (as AWS
+   * is). If it turns out it must be obtained via an SSO clone first, change the
+   * command source here — fetch/clone, then point the builder at the local
+   * script path — while keeping runAidlcConfig below unchanged.
+   */
+  async installViaAmadeusCli(workspaceUri: vscode.Uri): Promise<void> {
+    const variant = this.activeVariant;
+    if (!variant.installScriptUrl) {
+      throw new Error(`Variant ${variant.label} has no install script configured.`);
+    }
+
+    const scriptPathOrUrl = process.platform === 'win32'
+      ? variant.installScriptUrl.windows
+      : variant.installScriptUrl.unix;
+
+    // The single, correctable Amadeus machine-setup command (see
+    // buildAmadeusMachineSetupCommand for the isolated assumptions).
+    const installCmd = buildAmadeusMachineSetupCommand(process.platform, scriptPathOrUrl);
+    this.outputChannel?.appendLine(`Running Amadeus machine installer: ${installCmd}`);
+    if (this.outputChannel) {
+      await Shell.runStreaming(installCmd, this.outputChannel, {
+        timeout: 180000,
+        cwd: workspaceUri.fsPath,
+      });
+    } else {
+      await Shell.run(installCmd, { timeout: 180000, cwd: workspaceUri.fsPath });
+    }
+
+    // Configure the single harness that matches the host IDE, clamped to what
+    // this variant actually ships. Reuses runAidlcConfig verbatim (same as AWS).
     const { harness, fellBack } = resolveHarness(variant);
     if (fellBack) {
       this.outputChannel?.appendLine(

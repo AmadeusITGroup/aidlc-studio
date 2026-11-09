@@ -164,16 +164,84 @@ describe('UpdateChecker — Amadeus Artifactory path', () => {
     expect(info.latestVersion).toBe('unknown');
     expect(info.updateAvailable).toBe(false);
   });
+
+  // --- Part A: updateAvailable uses version PRECEDENCE, not raw string !== ---
+
+  it('does NOT prompt when current and latest are equal after normalization (the bug)', async () => {
+    // Current is a full preview token; the release feed publishes a bare
+    // 2.10.0. They are conceptually the same release — a raw `!==` would
+    // wrongly fire. compareFullVersion(2.10.0, 2.10.0-...) > 0 is FALSE (the
+    // tail-less 2.10.0 is not strictly newer than the same numeric with a
+    // pre-release tail is the one case that does differ — see note below).
+    shellRun = async (cmd) => {
+      if (cmd.includes('--version')) {
+        return { stdout: 'aidlc 2.10.0-1a.1.1.0-preview.3', stderr: '' };
+      }
+      // Preview channel feed carries the SAME preview token as installed.
+      if (cmd.includes('curl')) { return { stdout: '2.10.0-1a.1.1.0-preview.3', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'preview' });
+    const info = await checker.checkForUpdates();
+    expect(info.currentVersion).toBe('2.10.0-1a.1.1.0-preview.3');
+    expect(info.latestVersion).toBe('2.10.0-1a.1.1.0-preview.3');
+    // Equal by precedence → no update prompt (previously a false positive).
+    expect(info.updateAvailable).toBe(false);
+  });
+
+  it('does NOT prompt when installed is NEWER than the release feed (format mismatch)', async () => {
+    // Installed preview 2.11.0-... is newer than the release feed's 2.10.0.
+    // A raw string `!==` would nag; precedence must suppress it.
+    shellRun = async (cmd) => {
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.11.0-1a.2.0.0', stderr: '' }; }
+      if (cmd.includes('curl')) { return { stdout: '2.9.0 2.10.0', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const info = await checker.checkForUpdates();
+    expect(info.currentVersion).toBe('2.11.0-1a.2.0.0');
+    expect(info.latestVersion).toBe('2.10.0');
+    expect(info.updateAvailable).toBe(false);
+  });
+
+  it('STILL prompts when the feed genuinely publishes a newer version', async () => {
+    shellRun = async (cmd) => {
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0', stderr: '' }; }
+      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.12.0', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const info = await checker.checkForUpdates();
+    expect(info.currentVersion).toBe('2.10.0');
+    expect(info.latestVersion).toBe('2.12.0');
+    expect(info.updateAvailable).toBe(true);
+  });
+
+  it('does NOT prompt when current cannot be parsed to a comparable version', async () => {
+    // Binary reports a non-semver banner (no X.Y.Z); on-disk metadata absent.
+    shellRun = async (cmd) => {
+      if (cmd.includes('--version')) { return { stdout: 'aidlc dev-build', stderr: '' }; }
+      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.11.0', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const info = await checker.checkForUpdates();
+    // No parseable current → latest resolves but no false prompt.
+    expect(info.latestVersion).toBe('2.11.0');
+    expect(info.updateAvailable).toBe(false);
+  });
 });
 
-describe('UpdateChecker — repo-based update delegates to reinstall', () => {
-  it('routes the Amadeus update through RuleLoader.installViaRepoInstaller', async () => {
-    // The version re-check after install resolves current from the binary and
-    // latest from the feed; neither a git clone nor a blind dist-copy runs.
+describe('UpdateChecker — Amadeus (CLI model) update runs `aidlc update`', () => {
+  it('routes the Amadeus update through `aidlc update`, never a clone/dist-copy', async () => {
+    // 2.10+ Amadeus upgrades with the CLI, exactly like AWS. A git clone, a
+    // dist-copy, or any RuleLoader reinstall is a test failure.
+    const ran = { update: false };
     shellRun = async (cmd) => {
       if (cmd.includes('git clone') || cmd.includes('Copy-Item')) {
-        throw new Error(`forbidden standalone dist-copy on the update path: ${cmd}`);
+        throw new Error(`forbidden clone/dist-copy on the Amadeus update path: ${cmd}`);
       }
+      if (cmd.includes('update')) { ran.update = true; return { stdout: 'updated', stderr: '' }; }
       if (cmd.includes('--version')) { return { stdout: 'aidlc 2.11.0', stderr: '' }; }
       if (cmd.includes('curl')) { return { stdout: '2.10.0 2.11.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
@@ -185,35 +253,35 @@ describe('UpdateChecker — repo-based update delegates to reinstall', () => {
     const ok = await checker.pullLatest();
 
     expect(ok).toBe(true);
-    // The reinstall path ran exactly once...
-    expect(calls.installCount).toBe(1);
-    // ...and the loader was synced to the active variant before installing.
-    expect(calls.setVariantCount).toBe(1);
-    expect(calls.lastVariant).toBe(variant);
+    expect(ran.update).toBe(true);
+    // The CLI path must never touch the RuleLoader reinstall.
+    expect(calls.installCount).toBe(0);
+    expect(calls.setVariantCount).toBe(0);
   });
 
-  it('routes a custom variant through the same reinstall path', async () => {
+  it('routes a custom (git-clone-copy) variant through the RuleLoader reinstall path', async () => {
     shellRun = async (cmd) => {
       if (cmd.includes('--version')) { return { stdout: 'aidlc 1.0.0', stderr: '' }; }
       if (cmd.includes('curl')) { return { stdout: '1.0.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
     };
     const { stub, calls } = makeRuleLoaderStub();
-    // A git-clone-copy variant (custom fork) must also use the reinstall path.
+    // A git-clone-copy variant (custom fork) still uses the reinstall path.
     const variant = { ...getVariant('amadeus'), installMethod: 'git-clone-copy' as const };
     const checker = new UpdateChecker(makeChannel(), variant, stub);
 
     await checker.pullLatest();
 
     expect(calls.installCount).toBe(1);
+    expect(calls.setVariantCount).toBe(1);
   });
 
-  it('propagates RepoAccessError from the reinstall path', async () => {
-    const accessError = new RepoAccessError('no access', 'Amadeus AIDLC', 'https://example');
+  it('propagates RepoAccessError from the custom reinstall path', async () => {
+    const accessError = new RepoAccessError('no access', 'Custom', 'https://example');
     const { stub } = makeRuleLoaderStub({ fail: accessError });
     const checker = new UpdateChecker(
       makeChannel(),
-      { ...getVariant('amadeus'), channel: 'release' },
+      { ...getVariant('amadeus'), installMethod: 'git-clone-copy' as const },
       stub
     );
 

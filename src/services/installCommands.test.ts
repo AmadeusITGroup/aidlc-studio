@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   aidlcBinaryCandidates,
+  buildAmadeusMachineSetupCommand,
   buildNativeInstallCommand,
   buildRepoInstallerCommand,
 } from './installCommands';
@@ -72,7 +73,34 @@ describe('aidlcBinaryCandidates', () => {
   });
 });
 
-describe('buildRepoInstallerCommand', () => {
+describe('buildAmadeusMachineSetupCommand', () => {
+  // The Amadeus 2.10+ machine setup installs the CLI only (no -Target/-Harness
+  // legacy flags); the project is configured afterwards with `aidlc config`.
+  const winScript =
+    'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli/install-aidlc.ps1';
+  const shScript =
+    'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli/install-aidlc.sh';
+
+  it('runs install-aidlc.ps1 with -SkipCredentials on Windows (no -Target/-Harness)', () => {
+    const cmd = buildAmadeusMachineSetupCommand('win32', winScript);
+    expect(cmd).toBe(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${winScript}" -SkipCredentials`
+    );
+    expect(cmd).not.toContain('-Target');
+    expect(cmd).not.toContain('-Harness');
+  });
+
+  it('runs install-aidlc.sh with --skip-credentials on Unix', () => {
+    expect(buildAmadeusMachineSetupCommand('linux', shScript)).toBe(
+      `sh "${shScript}" --skip-credentials`
+    );
+    expect(buildAmadeusMachineSetupCommand('darwin', shScript)).toBe(
+      `sh "${shScript}" --skip-credentials`
+    );
+  });
+});
+
+describe('buildRepoInstallerCommand (legacy custom-fork path)', () => {
   it('runs the cloned install-aidlc.ps1 with -File on Windows', () => {
     expect(
       buildRepoInstallerCommand('win32', 'C:\\tmp\\clone\\scripts', 'C:\\ws', 'kiro-ide')

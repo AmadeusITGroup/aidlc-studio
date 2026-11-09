@@ -37,10 +37,17 @@ describe('variants catalog', () => {
     expect(aws?.installScriptUrl?.windows).toMatch(/install\.ps1$/);
   });
 
-  it('amadeus uses the official repo-installer with the bun-tool doctor', () => {
+  it('amadeus uses the CLI-driven installer (2.10+) with the native doctor', () => {
     const amadeus = AIDLC_VARIANTS.find((v) => v.id === 'amadeus');
-    expect(amadeus?.installMethod).toBe('repo-installer');
-    expect(amadeus?.doctorMode).toBe('bun-tool');
+    // 2.10+ Amadeus is CLI-driven (machine installer -> `aidlc config`), not
+    // the retired clone-and-copy-dist flow.
+    expect(amadeus?.installMethod).toBe('amadeus-cli');
+    expect(amadeus?.doctorMode).toBe('native');
+    // The machine-installer location is configured (the single SSO-gated value).
+    expect(amadeus?.installScriptUrl?.windows).toMatch(/install-aidlc\.ps1$/);
+    expect(amadeus?.installScriptUrl?.unix).toMatch(/install-aidlc\.sh$/);
+    // The Artifactory version feed is unchanged and correct.
+    expect(amadeus?.artifactory?.versionFeedUrl).toMatch(/\/cli$/);
     expect(amadeus?.repoUrl).toMatch(/^https?:\/\//);
   });
 });

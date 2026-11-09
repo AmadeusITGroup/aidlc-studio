@@ -25,11 +25,15 @@ export interface VersionInfo {
  *
  * The active variant must be passed so version checks and updates target the
  * right repo/channel:
- *  - 'native-installer' variants (AWS)  → use `aidlc update` CLI command
- *  - 'repo-installer' / 'git-clone-copy' variants (Amadeus / custom)
+ *  - CLI-driven variants (AWS 'native-installer', Amadeus 'amadeus-cli')
+ *      → upgrade with the `aidlc update` CLI command.
+ *  - legacy/custom 'repo-installer' / 'git-clone-copy' variants
  *      → delegate to the SAME reinstall path setup uses
  *        (RuleLoader.installViaRepoInstaller): clone the repo, run the
  *        official installer script, with a dist-copy fallback.
+ *
+ * Version checks: AWS compares the binary version against GitHub releases;
+ * Amadeus resolves the latest ONLY from the Artifactory feed (never GitHub).
  */
 export class UpdateChecker {
   private cachedVersionInfo: VersionInfo | null = null;
@@ -88,9 +92,9 @@ export class UpdateChecker {
       return this.checkNativeInstallerVersion(variant);
     }
 
-    // For repo-based variants (Amadeus / custom): resolve the latest ONLY from
-    // the Artifactory feed, filtered to the active channel. Never fall back to
-    // a GitHub release or `git ls-remote`.
+    // For Amadeus ('amadeus-cli') and custom ('git-clone-copy') variants:
+    // resolve the latest ONLY from the Artifactory feed, filtered to the active
+    // channel. Never fall back to a GitHub release or `git ls-remote`.
     return this.checkAmadeusArtifactoryVersion(variant);
   }
 
@@ -126,8 +130,19 @@ export class UpdateChecker {
       this.outputChannel.appendLine('No Artifactory feed base available; latest=unknown.');
     }
 
+    // Only prompt an update when the feed's latest is strictly NEWER than the
+    // installed version by version PRECEDENCE — not merely a different string.
+    // The on-disk current token and the feed token often differ only in format
+    // (e.g. current `2.10.0-1a.1.1.0-preview.3` vs feed `2.10.0`); a raw `!==`
+    // fires a false "update available" in that case. compareFullVersion applies
+    // numeric-semver-then-pre-release-tail precedence. When current can't be
+    // parsed to a comparable version we prefer NOT prompting (avoid a false
+    // positive) — isComparableVersion guards that.
     const updateAvailable =
-      latestVersion !== 'unknown' && currentVersion !== null && latestVersion !== currentVersion;
+      latestVersion !== 'unknown' &&
+      currentVersion !== null &&
+      isComparableVersion(currentVersion) &&
+      compareFullVersion(latestVersion, currentVersion) > 0;
 
     const info: VersionInfo = {
       currentVersion,
@@ -181,7 +196,11 @@ export class UpdateChecker {
    *   (RuleLoader.installViaRepoInstaller) — "update is basically a reinstall".
    */
   async pullLatest(): Promise<boolean> {
-    if (this.activeVariant.installMethod === 'native-installer') {
+    // CLI-driven variants (AWS native + Amadeus 2.10+) upgrade with
+    // `aidlc update`. Only the legacy/custom git-clone-copy path reinstalls
+    // from a clone.
+    const method = this.activeVariant.installMethod;
+    if (method === 'native-installer' || method === 'amadeus-cli') {
       return this.updateViaNativeCli();
     }
     return this.updateViaRepoInstaller();
@@ -438,6 +457,16 @@ export class UpdateChecker {
     }
     return null;
   }
+}
+
+/**
+ * True when a version string contains a parseable numeric semver core
+ * (`<major>.<minor>.<patch>`) that compareFullVersion can order. Used to gate
+ * the "update available" decision: an unparseable current version must NOT
+ * produce a false update prompt.
+ */
+function isComparableVersion(v: string): boolean {
+  return /\d+\.\d+\.\d+/.test(v);
 }
 
 /**

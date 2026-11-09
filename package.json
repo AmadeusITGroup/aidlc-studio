@@ -3,7 +3,7 @@
   "displayName": "AI-DLC Studio",
   "description": "Accelerate AI-Driven Development Life Cycle workflows in Kiro/VS Code — guided setup, workflow orchestration, progress tracking, and standards enforcement.",
   "icon": "resources/icon.png",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "AmadeusITGroup",
   "license": "MIT",
   "repository": {
