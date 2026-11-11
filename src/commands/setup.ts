@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { RuleLoader, RepoAccessError } from '../services/ruleLoader';
 import { BunInstaller } from '../services/bunInstaller';
+import { VariantAccessChecker, isAccessGated } from '../services/variantAccessChecker';
 import { AidlcCli } from '../services/aidlcCli';
 import { AIDLC_VARIANTS, getVariant } from '../services/variants';
 
@@ -70,8 +71,34 @@ export class SetupCommand {
           cancellable: true,
         },
         async (progress, token) => {
-          // Step 1: Ensure bun is installed
-          progress.report({ message: 'Step 1/5: Checking bun...', increment: 5 });
+          // Step 1 (pick) already happened above. Before installing the bun
+          // prerequisite, check whether the user can actually reach this
+          // variant's source, so a public user picking a private variant stops
+          // early with a friendly message instead of failing deep inside.
+          //
+          // IMPORTANT: git is NOT a setup prerequisite — it is never ensured or
+          // installed here. The access pre-check USES git only if it already
+          // happens to be present; when git is missing it silently skips
+          // (returns accessible) and we fall through to the normal install,
+          // whose RepoAccessError is the authoritative access backstop.
+          if (isAccessGated(variant)) {
+            progress.report({ message: 'Step 1/3: Checking access...', increment: 10 });
+            const access = await new VariantAccessChecker(this.outputChannel).check(variant);
+            // Only a genuine auth/not-found result short-circuits. A
+            // "could not determine" (e.g. git unavailable) leaves accessible
+            // true and proceeds to the real install-time check.
+            if (!access.accessible) {
+              throw new RepoAccessError(
+                access.reason ?? `No access to ${variant.label}.`,
+                variant.label,
+                variant.repoUrl
+              );
+            }
+            if (token.isCancellationRequested) { return; }
+          }
+
+          // Step 2: Prerequisite — ensure bun (the only setup prerequisite).
+          progress.report({ message: 'Step 2/3: Checking bun...', increment: 10 });
           const bunReady = await this.ensureBun();
           if (!bunReady) {
             throw new Error(
@@ -80,39 +107,39 @@ export class SetupCommand {
           }
           if (token.isCancellationRequested) { return; }
 
-          // Step 2+3: Install the framework via the variant's OFFICIAL method.
+          // Step 3: Install the framework via the variant's OFFICIAL method.
           switch (variant.installMethod) {
             case 'native-installer':
-              progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
+              progress.report({ message: 'Step 3/3: Running official installer...', increment: 50 });
               await this.ruleLoader.installViaNativeInstaller(workspaceFolder.uri);
               break;
             case 'amadeus-cli':
               // Amadeus 2.10+ CLI model: machine installer, then `aidlc config`.
-              progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
+              progress.report({ message: 'Step 3/3: Running official installer...', increment: 50 });
               await this.ruleLoader.installViaAmadeusCli(workspaceFolder.uri);
               break;
             case 'repo-installer':
               // LEGACY (2.5) path — retained but no catalog variant uses it.
-              progress.report({ message: 'Step 2/4: Running official installer...', increment: 50 });
+              progress.report({ message: 'Step 3/3: Running official installer...', increment: 50 });
               await this.ruleLoader.installViaRepoInstaller(workspaceFolder.uri);
               break;
             default: // 'git-clone-copy' (custom / legacy manual copy)
-              progress.report({ message: 'Step 2/4: Cloning AIDLC repo...', increment: 20 });
+              progress.report({ message: 'Step 3/3: Cloning AIDLC repo...', increment: 25 });
               await this.ruleLoader.cloneAidlcRepo();
               if (token.isCancellationRequested) { return; }
 
-              progress.report({ message: 'Step 3/4: Installing framework into workspace...', increment: 30 });
+              progress.report({ message: 'Step 3/3: Installing framework into workspace...', increment: 25 });
               await this.ruleLoader.installFramework(workspaceFolder.uri);
               break;
           }
           if (token.isCancellationRequested) { return; }
 
-          // Step 4: Update .gitignore
-          progress.report({ message: 'Updating .gitignore...', increment: 10 });
+          // Update .gitignore
+          progress.report({ message: 'Updating .gitignore...', increment: 5 });
           await this.ruleLoader.updateGitignore(workspaceFolder.uri);
 
-          // Step 5: Run /aidlc --doctor to verify
-          progress.report({ message: 'Running /aidlc --doctor...', increment: 30 });
+          // Run /aidlc --doctor to verify
+          progress.report({ message: 'Running /aidlc --doctor...', increment: 25 });
           await this.runDoctor(workspaceFolder.uri);
         }
       );

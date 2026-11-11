@@ -17,6 +17,7 @@ import { ApprovalCodeLensProvider } from './providers/approvalCodeLensProvider';
 import { StateManager } from './services/stateManager';
 import { RuleLoader } from './services/ruleLoader';
 import { BunInstaller } from './services/bunInstaller';
+import { GitInstaller } from './services/gitInstaller';
 import { UpdateChecker } from './services/updateChecker';
 import { Intent } from './types';
 
@@ -46,6 +47,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
   stateManager = new StateManager(context);
   const ruleLoader = new RuleLoader(context, outputChannel);
   const bunInstaller = new BunInstaller(outputChannel);
+  const gitInstaller = new GitInstaller(outputChannel);
 
   // Restore the variant that was active in the previous session (or auto-detect
   // from workspace files). Must complete before version checks and loadStatus()
@@ -63,7 +65,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
   });
 
   // Initialize tree view providers
-  const systemProvider = new SystemProvider(ruleLoader, updateChecker, bunInstaller);
+  const systemProvider = new SystemProvider(ruleLoader, updateChecker, bunInstaller, gitInstaller);
   const workflowProgressProvider = new WorkflowProgressProvider(stateManager);
   const stagesProvider = new StagesProvider(stateManager);
   const artifactsProvider = new ArtifactsProvider(stateManager);
@@ -144,6 +146,12 @@ function activateInternal(context: vscode.ExtensionContext): void {
     // bun install
     vscode.commands.registerCommand('amadeus-aidlc.installBun', async () => {
       await bunInstaller.install();
+      await reloadStatusAndViews();
+    }),
+
+    // git install
+    vscode.commands.registerCommand('amadeus-aidlc.installGit', async () => {
+      await gitInstaller.install();
       await reloadStatusAndViews();
     }),
 

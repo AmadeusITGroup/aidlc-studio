@@ -10,6 +10,13 @@ import {
 } from './installCommands';
 import { readAidlcInstall } from './aidlcInstallReader';
 import { classifyVariant } from './variantDetector';
+import {
+  applyPathExport,
+  buildPathExportBlock,
+  nonInteractiveShellEnvFiles,
+} from './pathExport';
+import * as fs from 'fs';
+import * as os from 'os';
 
 /**
  * Thrown when a variant's repository can't be reached because the user lacks
@@ -198,6 +205,10 @@ export class RuleLoader {
     }
     this.outputChannel?.appendLine(`Configuring harness (aidlc config --harness ${harness})...`);
     await this.runAidlcConfig(workspaceUri, harness);
+
+    // Make the freshly-installed aidlc CLI reachable from Kiro's
+    // non-interactive hook shells (Mac/Unix). No-op on Windows.
+    this.ensureAidlcOnPath();
   }
 
   /**
@@ -251,6 +262,63 @@ export class RuleLoader {
     }
     this.outputChannel?.appendLine(`Configuring harness (aidlc config --harness ${harness})...`);
     await this.runAidlcConfig(workspaceUri, harness);
+
+    // Make the freshly-installed aidlc CLI reachable from Kiro's
+    // non-interactive hook shells (Mac/Unix). No-op on Windows.
+    this.ensureAidlcOnPath();
+  }
+
+  /**
+   * Ensure the freshly-installed `aidlc` CLI is on PATH for Kiro's
+   * NON-INTERACTIVE hook shells. Mirrors BunInstaller.ensureBunOnPath: on
+   * Mac/Linux the CLI installs to a user bin dir (e.g. ~/.local/bin or
+   * ~/.aidlc/bin) that only the INTERACTIVE login PATH carries, so Kiro's
+   * hook shells can't find it (doctor warns "aidlc is interactive-only").
+   *
+   * - Unix: append an export block to ~/.zshenv (zsh) and ~/.bashrc (bash),
+   *   guarded by a unique marker so it's written only once; also update
+   *   process.env.PATH for the current session. The bin dir chosen is
+   *   whichever of the known candidate dirs actually exists (preferring
+   *   ~/.local/bin, then ~/.aidlc/bin). NOTE: /etc/paths.d would be the
+   *   system-wide alternative the doctor suggests, but it needs sudo, so the
+   *   rc-file approach (same as bun) is the permission-safe equivalent.
+   * - Windows: no-op — the native installer updates the user PATH via the
+   *   registry (same as bun).
+   *
+   * Returns true if a config file was written/updated.
+   */
+  private ensureAidlcOnPath(): boolean {
+    if (process.platform === 'win32') {
+      this.outputChannel?.appendLine(
+        'Windows: the aidlc installer updates the user PATH (registry). Reload to pick it up.'
+      );
+      return false;
+    }
+
+    const home = os.homedir();
+    // Prefer ~/.local/bin, then ~/.aidlc/bin — the Mac/Unix CLI install dirs.
+    const candidateBinDirs = [
+      path.posix.join(home, '.local', 'bin'),
+      path.posix.join(home, '.aidlc', 'bin'),
+    ];
+    const binDir = candidateBinDirs.find((dir) => fs.existsSync(path.join(dir, 'aidlc')))
+      ?? candidateBinDirs.find((dir) => fs.existsSync(dir))
+      ?? candidateBinDirs[0];
+
+    const marker = 'AIDLC Studio — aidlc on PATH';
+    const exportBlock = buildPathExportBlock(marker, binDir);
+
+    const wrote = applyPathExport(
+      nonInteractiveShellEnvFiles(home),
+      exportBlock,
+      marker,
+      (m) => this.outputChannel?.appendLine(m)
+    );
+
+    // Also update the current process PATH so it works this session.
+    process.env.PATH = `${binDir}:${process.env.PATH ?? ''}`;
+
+    return wrote;
   }
 
   /**

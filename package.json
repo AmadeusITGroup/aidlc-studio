@@ -158,6 +158,12 @@
         "icon": "$(package)"
       },
       {
+        "command": "amadeus-aidlc.installGit",
+        "title": "Install Git",
+        "category": "AIDLC Studio",
+        "icon": "$(package)"
+      },
+      {
         "command": "amadeus-aidlc.checkForUpdates",
         "title": "Check for Updates",
         "category": "AIDLC Studio",

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { UpdateChecker, VersionInfo } from '../services/updateChecker';
 import { RuleLoader } from '../services/ruleLoader';
 import { BunInstaller } from '../services/bunInstaller';
+import { GitInstaller } from '../services/gitInstaller';
 import { readRepoAidlcVersion } from '../services/repoVersionReader';
 
 /**
@@ -19,13 +20,16 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
   private setupConfigured: boolean | null = null;
   private bunInstalled: boolean | null = null;
   private bunVersion: string | null = null;
+  private gitInstalled: boolean | null = null;
+  private gitVersion: string | null = null;
   private versionInfo: VersionInfo | null = null;
   private repoVersion: string | null = null;
 
   constructor(
     private readonly ruleLoader: RuleLoader,
     private readonly updateChecker: UpdateChecker,
-    private readonly bunInstaller: BunInstaller
+    private readonly bunInstaller: BunInstaller,
+    private readonly gitInstaller: GitInstaller
   ) {}
 
   refresh(): void {
@@ -48,7 +52,13 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     this.bunInstalled = bunCheck.installed;
     this.bunVersion = bunCheck.version ?? null;
 
-    // Setup is "done" only when both the framework and bun are present
+    // git is a fast LOCAL check — run it in the same fast/local phase as bun,
+    // never the async network phase below.
+    const gitCheck = await this.gitInstaller.check();
+    this.gitInstalled = gitCheck.installed;
+    this.gitVersion = gitCheck.version ?? null;
+
+    // Setup is "done" only when the framework and bun are present
     const setupDone = this.setupConfigured && this.bunInstalled;
     await vscode.commands.executeCommand('setContext', 'amadeus-aidlc.setupDone', setupDone);
 
@@ -101,6 +111,7 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
 
     items.push(this.buildSetupItem());
     items.push(this.buildBunItem());
+    items.push(this.buildGitItem());
     items.push(this.buildHealthItem());
     items.push(this.buildVersionItem());
     items.push(this.buildRepoVersionItem());
@@ -206,7 +217,41 @@ export class SystemProvider implements vscode.TreeDataProvider<SystemItem> {
     return item;
   }
 
+  private buildGitItem(): SystemItem {
+    if (this.gitInstalled === null) {
+      return new SystemItem('Git', 'Checking...', new vscode.ThemeIcon('loading~spin'), 'system-git-loading');
+    }
+
+    if (this.gitInstalled) {
+      const item = new SystemItem(
+        'Git',
+        `v${this.gitVersion ?? 'installed'}`,
+        new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('testing.iconPassed')),
+        'system-git-ok'
+      );
+      item.tooltip = new vscode.MarkdownString(
+        `**Git v${this.gitVersion ?? 'unknown'}**\n\nUsed to check variant access (\`git ls-remote\`) and clone custom forks. Installed and on PATH.`
+      );
+      return item;
+    }
+
+    // Not installed — click installs
+    const item = new SystemItem(
+      'Git',
+      'Not installed — click to install',
+      new vscode.ThemeIcon('cloud-download', new vscode.ThemeColor('notificationsWarningIcon.foreground')),
+      'system-git-missing'
+    );
+    item.tooltip = new vscode.MarkdownString(
+      '**Git is not installed.**\n\nGit is used to check whether you have access to a variant (`git ls-remote`) and to clone custom forks.\n\n*Click to install Git.*'
+    );
+    item.command = { command: 'amadeus-aidlc.installGit', title: 'Install Git' };
+    return item;
+  }
+
   private buildHealthItem(): SystemItem {
+    // Health gates on the framework + bun only. Git is purely informational
+    // (its own row) and must not affect Health pass/fail.
     const healthy = this.setupConfigured && this.bunInstalled;
 
     if (healthy) {
