@@ -34,7 +34,7 @@ vi.mock('./shell', () => ({
   },
 }));
 
-import { UpdateChecker } from './updateChecker';
+import { UpdateChecker, parseCliUpdateCheck } from './updateChecker';
 import { RuleLoader, RepoAccessError } from './ruleLoader';
 import { getVariant } from './variants';
 
@@ -48,11 +48,14 @@ function makeChannel() {
  * verified without touching the real clone/installer.
  */
 function makeRuleLoaderStub(opts: { fail?: Error } = {}) {
-  const calls = { setVariantCount: 0, installCount: 0, lastVariant: null as unknown };
+  const calls = { setVariantCount: 0, installCount: 0, configureCount: 0, lastVariant: null as unknown };
   const stub = {
     setVariant(variant: unknown) {
       calls.setVariantCount++;
       calls.lastVariant = variant;
+    },
+    async configureWorkspaceForVariant() {
+      calls.configureCount++;
     },
     async installViaRepoInstaller() {
       calls.installCount++;
@@ -66,168 +69,100 @@ beforeEach(() => {
   shellRun = async () => { throw new Error('no command configured'); };
 });
 
-describe('UpdateChecker — AWS native path', () => {
-  it('reports aws display id and uses the GitHub release', async () => {
+describe('UpdateChecker — CLI-first update check (`aidlc update --check`)', () => {
+  // The CHECK is fully CLI-first for BOTH variants: no Artifactory feed scrape,
+  // no GitHub releases lookup. A `curl` to a feed or a `releases/latest` /
+  // `ls-remote` call is a test failure.
+  const forbidManualChecks = (cmd: string) => {
+    if (
+      cmd.includes('curl') ||
+      cmd.includes('releases/latest') ||
+      cmd.includes('ls-remote') ||
+      /\bgit\s/.test(cmd)
+    ) {
+      throw new Error(`forbidden manual feed/GitHub check: ${cmd}`);
+    }
+  };
+
+  it('AWS present: `aidlc update --check` reports an available update', async () => {
     shellRun = async (cmd) => {
-      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.9.0', stderr: '' }; }
-      if (cmd.includes('releases/latest')) {
-        return { stdout: JSON.stringify({ tag_name: 'v2.9.1', html_url: 'u' }), stderr: '' };
+      forbidManualChecks(cmd);
+      if (cmd.includes('update --check')) {
+        return { stdout: 'Update available: 2.9.0 -> 2.9.1', stderr: '' };
       }
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.9.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
     };
     const checker = new UpdateChecker(makeChannel(), getVariant('aws'));
     const info = await checker.checkForUpdates();
     expect(info.variantDisplayId).toBe('aws');
-    expect(info.channel).toBe('release');
+    expect(info.cliAbsent).toBeFalsy();
     expect(info.currentVersion).toBe('2.9.0');
     expect(info.latestVersion).toBe('2.9.1');
     expect(info.updateAvailable).toBe(true);
   });
-});
 
-describe('UpdateChecker — Amadeus Artifactory path', () => {
-  it('picks the latest RELEASE build for the release channel', async () => {
+  it('Amadeus present: `aidlc update --check` reports up to date', async () => {
     shellRun = async (cmd) => {
-      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0', stderr: '' }; }
-      if (cmd.includes('curl')) {
-        // Feed lists a release and a preview; release channel must ignore preview.
-        return { stdout: '2.10.0 2.11.0 2.12.0-1a.1.0.0', stderr: '' };
+      forbidManualChecks(cmd);
+      if (cmd.includes('update --check')) {
+        return { stdout: 'You are up-to-date (2.10.0).', stderr: '' };
       }
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
     };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const checker = new UpdateChecker(makeChannel(), getVariant('amadeus'));
     const info = await checker.checkForUpdates();
     expect(info.variantDisplayId).toBe('amadeus');
-    expect(info.channel).toBe('release');
     expect(info.currentVersion).toBe('2.10.0');
-    expect(info.latestVersion).toBe('2.11.0');
-    expect(info.updateAvailable).toBe(true);
-  });
-
-  it('picks the latest PREVIEW build and detects a newer preview', async () => {
-    shellRun = async (cmd) => {
-      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0-1a.1.0.0', stderr: '' }; }
-      if (cmd.includes('curl')) {
-        return { stdout: '2.10.0 2.10.0-1a.1.0.0 2.11.0-1a.2.0.0', stderr: '' };
-      }
-      throw new Error(`unexpected: ${cmd}`);
-    };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'preview' });
-    const info = await checker.checkForUpdates();
-    expect(info.variantDisplayId).toBe('amadeus-preview');
-    expect(info.channel).toBe('preview');
-    expect(info.currentVersion).toBe('2.10.0-1a.1.0.0');
-    expect(info.latestVersion).toBe('2.11.0-1a.2.0.0');
-    expect(info.updateAvailable).toBe(true);
-  });
-
-  it('degrades gracefully to unknown latest when the feed throws', async () => {
-    shellRun = async (cmd) => {
-      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0', stderr: '' }; }
-      if (cmd.includes('curl')) { throw new Error('network down'); }
-      throw new Error(`unexpected: ${cmd}`);
-    };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
-    const info = await checker.checkForUpdates();
-    expect(info.currentVersion).toBe('2.10.0');
-    expect(info.latestVersion).toBe('unknown');
     expect(info.updateAvailable).toBe(false);
   });
 
-  it('never falls back to a GitHub/git tag lookup (no bogus 7.161.26)', async () => {
-    // Guard against BUG B: the Amadeus path must only consult the Artifactory
-    // feed. A GitHub releases call or `git ls-remote` is a test failure.
+  it('uses PRECEDENCE when the CLI gives only a latest token, not a raw !==', async () => {
+    // CLI prints just the latest token; installed is a newer build. A raw
+    // `!==` would nag — precedence must suppress it.
     shellRun = async (cmd) => {
-      if (cmd.includes('releases/latest') || cmd.includes('ls-remote') || cmd.includes('git ')) {
-        throw new Error(`forbidden GitHub/git lookup on the Amadeus path: ${cmd}`);
+      forbidManualChecks(cmd);
+      if (cmd.includes('update --check')) {
+        return { stdout: 'latest: 2.10.0', stderr: '' };
       }
-      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0-1a.1.1.0-preview.3', stderr: '' }; }
-      if (cmd.includes('curl')) { throw new Error('feed unreachable'); }
-      throw new Error(`unexpected: ${cmd}`);
-    };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'preview' });
-    const info = await checker.checkForUpdates();
-    // Current from binary, latest degrades to 'unknown' — never a GitHub tag.
-    expect(info.currentVersion).toBe('2.10.0-1a.1.1.0-preview.3');
-    expect(info.latestVersion).toBe('unknown');
-    expect(info.variantDisplayId).toBe('amadeus-preview');
-  });
-
-  it('degrades gracefully when the feed returns an unexpected shape', async () => {
-    shellRun = async (cmd) => {
-      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0', stderr: '' }; }
-      if (cmd.includes('curl')) { return { stdout: '<html>no versions here</html>', stderr: '' }; }
-      throw new Error(`unexpected: ${cmd}`);
-    };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
-    const info = await checker.checkForUpdates();
-    expect(info.latestVersion).toBe('unknown');
-    expect(info.updateAvailable).toBe(false);
-  });
-
-  // --- Part A: updateAvailable uses version PRECEDENCE, not raw string !== ---
-
-  it('does NOT prompt when current and latest are equal after normalization (the bug)', async () => {
-    // Current is a full preview token; the release feed publishes a bare
-    // 2.10.0. They are conceptually the same release — a raw `!==` would
-    // wrongly fire. compareFullVersion(2.10.0, 2.10.0-...) > 0 is FALSE (the
-    // tail-less 2.10.0 is not strictly newer than the same numeric with a
-    // pre-release tail is the one case that does differ — see note below).
-    shellRun = async (cmd) => {
-      if (cmd.includes('--version')) {
-        return { stdout: 'aidlc 2.10.0-1a.1.1.0-preview.3', stderr: '' };
-      }
-      // Preview channel feed carries the SAME preview token as installed.
-      if (cmd.includes('curl')) { return { stdout: '2.10.0-1a.1.1.0-preview.3', stderr: '' }; }
-      throw new Error(`unexpected: ${cmd}`);
-    };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'preview' });
-    const info = await checker.checkForUpdates();
-    expect(info.currentVersion).toBe('2.10.0-1a.1.1.0-preview.3');
-    expect(info.latestVersion).toBe('2.10.0-1a.1.1.0-preview.3');
-    // Equal by precedence → no update prompt (previously a false positive).
-    expect(info.updateAvailable).toBe(false);
-  });
-
-  it('does NOT prompt when installed is NEWER than the release feed (format mismatch)', async () => {
-    // Installed preview 2.11.0-... is newer than the release feed's 2.10.0.
-    // A raw string `!==` would nag; precedence must suppress it.
-    shellRun = async (cmd) => {
       if (cmd.includes('--version')) { return { stdout: 'aidlc 2.11.0-1a.2.0.0', stderr: '' }; }
-      if (cmd.includes('curl')) { return { stdout: '2.9.0 2.10.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
     };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const checker = new UpdateChecker(makeChannel(), getVariant('amadeus'));
     const info = await checker.checkForUpdates();
     expect(info.currentVersion).toBe('2.11.0-1a.2.0.0');
     expect(info.latestVersion).toBe('2.10.0');
     expect(info.updateAvailable).toBe(false);
   });
 
-  it('STILL prompts when the feed genuinely publishes a newer version', async () => {
+  it('CLI check ERRORS → latest unknown, no fallback feed/GitHub scrape', async () => {
     shellRun = async (cmd) => {
+      forbidManualChecks(cmd);
+      if (cmd.includes('update --check')) { throw new Error('check failed'); }
       if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0', stderr: '' }; }
-      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.12.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
     };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const checker = new UpdateChecker(makeChannel(), getVariant('amadeus'));
     const info = await checker.checkForUpdates();
     expect(info.currentVersion).toBe('2.10.0');
-    expect(info.latestVersion).toBe('2.12.0');
-    expect(info.updateAvailable).toBe(true);
+    expect(info.latestVersion).toBe('unknown');
+    expect(info.updateAvailable).toBe(false);
   });
 
-  it('does NOT prompt when current cannot be parsed to a comparable version', async () => {
-    // Binary reports a non-semver banner (no X.Y.Z); on-disk metadata absent.
+  it('CLI ABSENT → cliAbsent, no latest, and NO network/feed/GitHub lookup', async () => {
+    // Nothing answers --version (no binary, no metadata) → CLI absent. The only
+    // probe allowed is detection; a feed/GitHub lookup is a failure.
     shellRun = async (cmd) => {
-      if (cmd.includes('--version')) { return { stdout: 'aidlc dev-build', stderr: '' }; }
-      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.11.0', stderr: '' }; }
-      throw new Error(`unexpected: ${cmd}`);
+      forbidManualChecks(cmd);
+      // Even a bare `aidlc --version` fails → detectCliPresence reports absent.
+      throw new Error(`no cli: ${cmd}`);
     };
-    const checker = new UpdateChecker(makeChannel(), { ...getVariant('amadeus'), channel: 'release' });
+    const checker = new UpdateChecker(makeChannel(), getVariant('aws'));
     const info = await checker.checkForUpdates();
-    // No parseable current → latest resolves but no false prompt.
-    expect(info.latestVersion).toBe('2.11.0');
+    expect(info.cliAbsent).toBe(true);
+    expect(info.currentVersion).toBeNull();
+    expect(info.latestVersion).toBe('unknown');
     expect(info.updateAvailable).toBe(false);
   });
 });
@@ -247,7 +182,7 @@ describe('UpdateChecker — Amadeus (CLI model) update runs `aidlc update`', () 
       throw new Error(`unexpected: ${cmd}`);
     };
     const { stub, calls } = makeRuleLoaderStub();
-    const variant = { ...getVariant('amadeus'), channel: 'release' as const };
+    const variant = getVariant('amadeus');
     const checker = new UpdateChecker(makeChannel(), variant, stub);
 
     const ok = await checker.pullLatest();
@@ -257,6 +192,47 @@ describe('UpdateChecker — Amadeus (CLI model) update runs `aidlc update`', () 
     // The CLI path must never touch the RuleLoader reinstall.
     expect(calls.installCount).toBe(0);
     expect(calls.setVariantCount).toBe(0);
+  });
+
+  it('CLI-first: refreshes the workspace via aidlc config after `aidlc update`', async () => {
+    shellRun = async (cmd) => {
+      if (cmd.includes('update')) { return { stdout: 'updated', stderr: '' }; }
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.11.0', stderr: '' }; }
+      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.11.0', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const { stub, calls } = makeRuleLoaderStub();
+    const checker = new UpdateChecker(
+      makeChannel(),
+      getVariant('amadeus'),
+      stub
+    );
+
+    await checker.pullLatest();
+
+    // CLI upgrade ran AND the workspace was refreshed with `aidlc config`.
+    expect(calls.configureCount).toBe(1);
+    expect(calls.installCount).toBe(0);
+  });
+
+  it('CLI-first FALLBACK: a failed `aidlc update` reinstalls via the repo path', async () => {
+    shellRun = async (cmd) => {
+      if (cmd.includes('update')) { throw new Error('aidlc update boom'); }
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.11.0', stderr: '' }; }
+      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.11.0', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const { stub, calls } = makeRuleLoaderStub();
+    const checker = new UpdateChecker(
+      makeChannel(),
+      getVariant('amadeus'),
+      stub
+    );
+
+    await checker.pullLatest();
+
+    // Fell back to the clone/dist reinstall path.
+    expect(calls.installCount).toBe(1);
   });
 
   it('routes a custom (git-clone-copy) variant through the RuleLoader reinstall path', async () => {
@@ -314,4 +290,68 @@ describe('UpdateChecker — AWS native update path is unchanged', () => {
     expect(calls.installCount).toBe(0);
     expect(calls.setVariantCount).toBe(0);
   });
+});
+
+describe('parseCliUpdateCheck — tolerant parser for `aidlc update --check`', () => {
+  it('detects an explicit "update available" and reads the TARGET of an upgrade arrow', () => {
+    const r = parseCliUpdateCheck('An update is available: 2.9.0 -> 2.9.1');
+    expect(r.updateAvailable).toBe(true);
+    // The latest is the arrow TARGET, not the source.
+    expect(r.latestVersion).toBe('2.9.1');
+  });
+
+  it('detects "up-to-date" and reads "no update available" as NOT available', () => {
+    expect(parseCliUpdateCheck('aidlc is up-to-date (2.10.0)').updateAvailable).toBe(false);
+    expect(parseCliUpdateCheck('No update available.').updateAvailable).toBe(false);
+    expect(parseCliUpdateCheck("You're on the latest version 2.10.0").updateAvailable).toBe(false);
+  });
+
+  it('parses a pre-release tail version token', () => {
+    const r = parseCliUpdateCheck('update available 2.11.0-1a.2.0.0');
+    expect(r.updateAvailable).toBe(true);
+    expect(r.latestVersion).toBe('2.11.0-1a.2.0.0');
+  });
+
+  it('returns all-null when there is no signal and no version', () => {
+    const r = parseCliUpdateCheck('checking...');
+    expect(r.updateAvailable).toBeNull();
+    expect(r.latestVersion).toBeNull();
+  });
+
+  it('is null-safe on empty/garbage input', () => {
+    expect(parseCliUpdateCheck('').updateAvailable).toBeNull();
+    expect(parseCliUpdateCheck(undefined as unknown as string).latestVersion).toBeNull();
+  });
+});
+
+describe('UpdateChecker — update check runs on macOS and Windows alike', () => {
+  // The binary is resolved by ABSOLUTE PATH first, then bare `aidlc` — so the
+  // `aidlc update --check` invocation works on either OS even when the CLI is
+  // not on this process's PATH. Here no candidate files exist on disk, so both
+  // platforms fall through to the bare-PATH `aidlc update --check`.
+  for (const platform of ['darwin', 'win32', 'linux'] as const) {
+    it(`[${platform}] sources the check from \`aidlc update --check\``, async () => {
+      const original = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      try {
+        const seen: string[] = [];
+        shellRun = async (cmd) => {
+          seen.push(cmd);
+          if (cmd.includes('update --check')) {
+            return { stdout: 'Update available: 2.9.1', stderr: '' };
+          }
+          if (cmd.includes('--version')) { return { stdout: 'aidlc 2.9.0', stderr: '' }; }
+          throw new Error(`unexpected: ${cmd}`);
+        };
+        const checker = new UpdateChecker(makeChannel(), getVariant('aws'));
+        const info = await checker.checkForUpdates();
+        expect(info.updateAvailable).toBe(true);
+        expect(info.latestVersion).toBe('2.9.1');
+        // The check was sourced from the CLI, not a feed/GitHub call.
+        expect(seen.some((c) => c.includes('update --check'))).toBe(true);
+      } finally {
+        if (original) { Object.defineProperty(process, 'platform', original); }
+      }
+    });
+  }
 });

@@ -46,8 +46,9 @@ describe('variants catalog', () => {
     // The machine-installer location is configured (the single SSO-gated value).
     expect(amadeus?.installScriptUrl?.windows).toMatch(/install-aidlc\.ps1$/);
     expect(amadeus?.installScriptUrl?.unix).toMatch(/install-aidlc\.sh$/);
-    // The Artifactory version feed is unchanged and correct.
-    expect(amadeus?.artifactory?.versionFeedUrl).toMatch(/\/cli$/);
+    // The version CHECK is now CLI-first (`aidlc update --check`) for both
+    // variants, so there is no longer an Artifactory feed field on the variant.
+    expect((amadeus as unknown as { artifactory?: unknown }).artifactory).toBeUndefined();
     expect(amadeus?.repoUrl).toMatch(/^https?:\/\//);
   });
 });

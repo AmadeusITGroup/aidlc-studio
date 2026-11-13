@@ -81,21 +81,42 @@ describe('buildAmadeusMachineSetupCommand', () => {
   const shScript =
     'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli/install-aidlc.sh';
 
-  it('runs install-aidlc.ps1 with -SkipCredentials on Windows (no -Target/-Harness)', () => {
+  // --- Remote URL (the common case): -File must NOT receive a URL ---
+
+  it('fetches the remote script via irm|iex on Windows — NEVER -File "<url>"', () => {
     const cmd = buildAmadeusMachineSetupCommand('win32', winScript);
+    // Structural bug fix: a URL may not be passed to -File ("Illegal
+    // characters in path"). It is fetched with irm and run as a scriptblock.
     expect(cmd).toBe(
-      `powershell -NoProfile -ExecutionPolicy Bypass -File "${winScript}" -SkipCredentials`
+      `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm '${winScript}'))) -SkipCredentials"`
     );
+    expect(cmd).not.toContain(`-File "${winScript}"`);
     expect(cmd).not.toContain('-Target');
     expect(cmd).not.toContain('-Harness');
   });
 
-  it('runs install-aidlc.sh with --skip-credentials on Unix', () => {
+  it('pipes the remote script into sh for a URL on Unix (never sh <url>)', () => {
     expect(buildAmadeusMachineSetupCommand('linux', shScript)).toBe(
-      `sh "${shScript}" --skip-credentials`
+      `curl -fsSL ${shScript} | sh -s -- --skip-credentials`
     );
     expect(buildAmadeusMachineSetupCommand('darwin', shScript)).toBe(
-      `sh "${shScript}" --skip-credentials`
+      `curl -fsSL ${shScript} | sh -s -- --skip-credentials`
+    );
+  });
+
+  // --- Local path (SSO-clone fallback): -File / sh <path> is correct ---
+
+  it('runs a LOCAL ps1 path with -File on Windows', () => {
+    const local = 'C:\\tmp\\clone\\scripts\\install-aidlc.ps1';
+    expect(buildAmadeusMachineSetupCommand('win32', local)).toBe(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${local}" -SkipCredentials`
+    );
+  });
+
+  it('runs a LOCAL sh path with sh on Unix', () => {
+    const local = '/tmp/clone/scripts/install-aidlc.sh';
+    expect(buildAmadeusMachineSetupCommand('linux', local)).toBe(
+      `sh "${local}" --skip-credentials`
     );
   });
 });

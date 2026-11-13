@@ -3,7 +3,8 @@ import { RuleLoader, RepoAccessError } from '../services/ruleLoader';
 import { BunInstaller } from '../services/bunInstaller';
 import { VariantAccessChecker, isAccessGated } from '../services/variantAccessChecker';
 import { AidlcCli } from '../services/aidlcCli';
-import { AIDLC_VARIANTS, getVariant } from '../services/variants';
+import { AIDLC_VARIANTS, AidlcVariant, getVariant } from '../services/variants';
+import { detectCliPresence } from '../services/cliPresence';
 
 export class SetupCommand {
   constructor(
@@ -43,106 +44,19 @@ export class SetupCommand {
         }
       }
 
-      // Ask which AIDLC variant to install
-      const picked = await vscode.window.showQuickPick(
-        AIDLC_VARIANTS.map((v) => ({
-          label: v.label,
-          detail: v.repoUrl,
-          id: v.id,
-        })),
-        {
-          title: 'Which AI-DLC version do you want to install?',
-          placeHolder: 'Select a variant (AWS open source is recommended for most users)',
-        }
-      );
+      // CLI-FIRST decision point. Both AWS and Amadeus install a binary named
+      // `aidlc` to the SAME machine location — there is only ever ONE `aidlc`
+      // on PATH — so when a CLI is already present we DETECT its variant from
+      // on-disk metadata and configure this project with it, instead of asking
+      // "AWS or Amadeus?". The variant picker appears ONLY when no CLI exists
+      // and we must bootstrap one.
+      const presence = await detectCliPresence();
 
-      if (!picked) {
-        return; // User cancelled
+      if (presence.present) {
+        await this.executeWithPresentCli(workspaceFolder.uri, presence.variantId);
+      } else {
+        await this.executeWithBootstrap(workspaceFolder.uri);
       }
-
-      const variant = getVariant(picked.id);
-      this.ruleLoader.setVariant(variant);
-      this.outputChannel.appendLine(`Selected variant: ${variant.label} (${variant.repoUrl})`);
-
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Setting up ${variant.label}`,
-          cancellable: true,
-        },
-        async (progress, token) => {
-          // Step 1 (pick) already happened above. Before installing the bun
-          // prerequisite, check whether the user can actually reach this
-          // variant's source, so a public user picking a private variant stops
-          // early with a friendly message instead of failing deep inside.
-          //
-          // IMPORTANT: git is NOT a setup prerequisite — it is never ensured or
-          // installed here. The access pre-check USES git only if it already
-          // happens to be present; when git is missing it silently skips
-          // (returns accessible) and we fall through to the normal install,
-          // whose RepoAccessError is the authoritative access backstop.
-          if (isAccessGated(variant)) {
-            progress.report({ message: 'Step 1/3: Checking access...', increment: 10 });
-            const access = await new VariantAccessChecker(this.outputChannel).check(variant);
-            // Only a genuine auth/not-found result short-circuits. A
-            // "could not determine" (e.g. git unavailable) leaves accessible
-            // true and proceeds to the real install-time check.
-            if (!access.accessible) {
-              throw new RepoAccessError(
-                access.reason ?? `No access to ${variant.label}.`,
-                variant.label,
-                variant.repoUrl
-              );
-            }
-            if (token.isCancellationRequested) { return; }
-          }
-
-          // Step 2: Prerequisite — ensure bun (the only setup prerequisite).
-          progress.report({ message: 'Step 2/3: Checking bun...', increment: 10 });
-          const bunReady = await this.ensureBun();
-          if (!bunReady) {
-            throw new Error(
-              'bun is required for AIDLC. Install manually: https://bun.sh/docs/installation'
-            );
-          }
-          if (token.isCancellationRequested) { return; }
-
-          // Step 3: Install the framework via the variant's OFFICIAL method.
-          switch (variant.installMethod) {
-            case 'native-installer':
-              progress.report({ message: 'Step 3/3: Running official installer...', increment: 50 });
-              await this.ruleLoader.installViaNativeInstaller(workspaceFolder.uri);
-              break;
-            case 'amadeus-cli':
-              // Amadeus 2.10+ CLI model: machine installer, then `aidlc config`.
-              progress.report({ message: 'Step 3/3: Running official installer...', increment: 50 });
-              await this.ruleLoader.installViaAmadeusCli(workspaceFolder.uri);
-              break;
-            case 'repo-installer':
-              // LEGACY (2.5) path — retained but no catalog variant uses it.
-              progress.report({ message: 'Step 3/3: Running official installer...', increment: 50 });
-              await this.ruleLoader.installViaRepoInstaller(workspaceFolder.uri);
-              break;
-            default: // 'git-clone-copy' (custom / legacy manual copy)
-              progress.report({ message: 'Step 3/3: Cloning AIDLC repo...', increment: 25 });
-              await this.ruleLoader.cloneAidlcRepo();
-              if (token.isCancellationRequested) { return; }
-
-              progress.report({ message: 'Step 3/3: Installing framework into workspace...', increment: 25 });
-              await this.ruleLoader.installFramework(workspaceFolder.uri);
-              break;
-          }
-          if (token.isCancellationRequested) { return; }
-
-          // Update .gitignore
-          progress.report({ message: 'Updating .gitignore...', increment: 5 });
-          await this.ruleLoader.updateGitignore(workspaceFolder.uri);
-
-          // Run /aidlc --doctor to verify
-          progress.report({ message: 'Running /aidlc --doctor...', increment: 25 });
-          await this.runDoctor(workspaceFolder.uri);
-        }
-      );
 
       this.outputChannel.appendLine('');
       this.outputChannel.appendLine('=== Setup Complete ===');
@@ -187,6 +101,211 @@ export class SetupCommand {
       // Still refresh so any partial state is reflected
       await this.onStatusChange();
     }
+  }
+
+  /**
+   * CLI PRESENT path: detect the variant from on-disk metadata, configure THIS
+   * workspace with the installed CLI (`aidlc config`), then run doctor. NO
+   * repo clone, NO dist copy, NO installer run — the CLI already exists.
+   *
+   * On failure, FALL BACK to the full install path (installMethod switch),
+   * which clones/copies as a last resort. The detected variant drives both the
+   * CLI config and the fallback method.
+   */
+  private async executeWithPresentCli(
+    workspaceUri: vscode.Uri,
+    detectedVariantId: 'aws' | 'amadeus' | null
+  ): Promise<void> {
+    // Detect-don't-ask: resolve the variant from what's installed. When
+    // detection couldn't classify, fall back to the default (AWS) variant —
+    // the config step is variant-agnostic beyond harness resolution.
+    const variant = getVariant(detectedVariantId ?? 'aws');
+    this.ruleLoader.setVariant(variant);
+    this.outputChannel.appendLine(
+      `Detected installed aidlc CLI: ${variant.label}. Configuring this workspace (no reinstall).`
+    );
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Configuring workspace with ${variant.label} CLI`,
+        cancellable: false,
+      },
+      async (progress) => {
+        try {
+          progress.report({ message: 'Running aidlc config...', increment: 40 });
+          await this.ruleLoader.configureWorkspaceForVariant(workspaceUri, variant);
+
+          progress.report({ message: 'Updating .gitignore...', increment: 10 });
+          await this.ruleLoader.updateGitignore(workspaceUri);
+
+          progress.report({ message: 'Running aidlc doctor...', increment: 50 });
+          await this.runDoctor(workspaceUri);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          this.outputChannel.appendLine(
+            `[AIDLC fallback] CLI-first setup was attempted (a present \`aidlc\` CLI was detected ` +
+            `and \`aidlc config\` was run), but it FAILED: ${msg}. ` +
+            'Now falling back to the LEGACY repo-clone/dist-copy install path.'
+          );
+          await this.installViaFallback(workspaceUri, variant, progress);
+        }
+      }
+    );
+  }
+
+  /**
+   * CLI ABSENT path: show the AWS/Amadeus picker, bootstrap that variant's CLI
+   * (AWS public one-liner / Amadeus machine installer), ensure it's on PATH,
+   * then `aidlc config` + doctor. On bootstrap failure, FALL BACK to the
+   * repo-clone/dist-copy path.
+   *
+   * Preserves the session ordering: access pre-check BEFORE prerequisites, and
+   * a graceful skip when git is absent (VariantAccessChecker returns accessible
+   * with the GIT_UNAVAILABLE_SKIP sentinel).
+   */
+  private async executeWithBootstrap(workspaceUri: vscode.Uri): Promise<void> {
+    const picked = await vscode.window.showQuickPick(
+      AIDLC_VARIANTS.map((v) => ({
+        label: v.label,
+        detail: v.repoUrl,
+        id: v.id,
+      })),
+      {
+        title: 'No aidlc CLI found — which AI-DLC version do you want to install?',
+        placeHolder: 'Select a variant (AWS open source is recommended for most users)',
+      }
+    );
+
+    if (!picked) {
+      return; // User cancelled
+    }
+
+    const variant = getVariant(picked.id);
+    this.ruleLoader.setVariant(variant);
+    this.outputChannel.appendLine(`Selected variant: ${variant.label} (${variant.repoUrl})`);
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Setting up ${variant.label}`,
+        cancellable: true,
+      },
+      async (progress, token) => {
+        // Step 1: access pre-check (before prerequisites). git is NOT a setup
+        // prerequisite — the check USES git only if present; a missing git
+        // silently skips and we fall through to the real install-time check.
+        if (isAccessGated(variant)) {
+          progress.report({ message: 'Step 1/3: Checking access...', increment: 10 });
+          const access = await new VariantAccessChecker(this.outputChannel).check(variant);
+          if (!access.accessible) {
+            throw new RepoAccessError(
+              access.reason ?? `No access to ${variant.label}.`,
+              variant.label,
+              variant.repoUrl
+            );
+          }
+          if (token.isCancellationRequested) { return; }
+        }
+
+        // Step 2: Prerequisite — ensure bun (the only setup prerequisite).
+        progress.report({ message: 'Step 2/3: Checking bun...', increment: 10 });
+        const bunReady = await this.ensureBun();
+        if (!bunReady) {
+          throw new Error(
+            'bun is required for AIDLC. Install manually: https://bun.sh/docs/installation'
+          );
+        }
+        if (token.isCancellationRequested) { return; }
+
+        // Step 3: Bootstrap the CLI, then configure. CLI-first: AWS one-liner /
+        // Amadeus machine installer both install the `aidlc` CLI and then run
+        // `aidlc config`. On bootstrap failure, fall back to clone/dist.
+        try {
+          progress.report({ message: 'Step 3/3: Installing the aidlc CLI...', increment: 50 });
+          await this.bootstrapCli(workspaceUri, variant);
+          if (token.isCancellationRequested) { return; }
+
+          progress.report({ message: 'Updating .gitignore...', increment: 5 });
+          await this.ruleLoader.updateGitignore(workspaceUri);
+
+          progress.report({ message: 'Running aidlc doctor...', increment: 25 });
+          await this.runDoctor(workspaceUri);
+        } catch (e) {
+          // A RepoAccessError is an access problem, not a path failure — let it
+          // propagate to the friendly "no access" handler rather than clone.
+          if (e instanceof RepoAccessError) { throw e; }
+          const msg = e instanceof Error ? e.message : String(e);
+          this.outputChannel.appendLine(
+            `[AIDLC fallback] CLI-first setup was attempted (no CLI was present, so the CLI ` +
+            `bootstrap installer was run), but it FAILED: ${msg}. ` +
+            'Now falling back to the LEGACY repo-clone/dist-copy install path.'
+          );
+          await this.installViaFallback(workspaceUri, variant, progress);
+        }
+      }
+    );
+  }
+
+  /**
+   * Bootstrap the `aidlc` CLI for the chosen variant via its official method
+   * (CLI-first): AWS native one-liner, or the Amadeus machine installer. Both
+   * then run `aidlc config`. A custom 'git-clone-copy' fork has no CLI to
+   * bootstrap, so it uses the clone-copy path directly.
+   */
+  private async bootstrapCli(workspaceUri: vscode.Uri, variant: AidlcVariant): Promise<void> {
+    switch (variant.installMethod) {
+      case 'native-installer':
+        await this.ruleLoader.installViaNativeInstaller(workspaceUri);
+        break;
+      case 'amadeus-cli':
+        await this.ruleLoader.installViaAmadeusCli(workspaceUri);
+        break;
+      default:
+        // 'repo-installer' (legacy) and 'git-clone-copy' (custom fork) have no
+        // CLI to bootstrap; go straight to the clone-based install.
+        await this.installViaFallback(workspaceUri, variant);
+        break;
+    }
+  }
+
+  /**
+   * LAYERED FALLBACK (user-approved): the existing repo-clone +
+   * official-installer-script + dist-copy path. Kept working so a failed
+   * CLI-first attempt, a legacy 'repo-installer' variant, or an explicit custom
+   * 'git-clone-copy' fork all still install. Not deleted.
+   */
+  private async installViaFallback(
+    workspaceUri: vscode.Uri,
+    variant: AidlcVariant,
+    progress?: vscode.Progress<{ message?: string; increment?: number }>
+  ): Promise<void> {
+    this.outputChannel.appendLine(
+      `[AIDLC fallback] Entering the LEGACY repo-clone/dist-copy install path for ` +
+      `${variant.label} (installMethod=${variant.installMethod}). The CLI-first path ` +
+      'is preferred; an installed `aidlc` CLI avoids this legacy path entirely.'
+    );
+    switch (variant.installMethod) {
+      case 'native-installer':
+        progress?.report({ message: 'Fallback: running official installer...' });
+        await this.ruleLoader.installViaNativeInstaller(workspaceUri);
+        break;
+      case 'amadeus-cli':
+      case 'repo-installer':
+        progress?.report({ message: 'Fallback: cloning and running the official installer...' });
+        await this.ruleLoader.installViaRepoInstaller(workspaceUri);
+        break;
+      default: // 'git-clone-copy' (custom / legacy manual copy)
+        progress?.report({ message: 'Fallback: cloning AIDLC repo...' });
+        await this.ruleLoader.cloneAidlcRepo();
+        progress?.report({ message: 'Fallback: installing framework into workspace...' });
+        await this.ruleLoader.installFramework(workspaceUri);
+        break;
+    }
+
+    // Keep the shared post-install steps consistent with the primary path.
+    await this.ruleLoader.updateGitignore(workspaceUri);
+    await this.runDoctor(workspaceUri);
   }
 
   private async ensureBun(): Promise<boolean> {

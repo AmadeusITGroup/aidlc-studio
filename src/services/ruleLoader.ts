@@ -38,7 +38,6 @@ export class RepoAccessError extends Error {
 export class RuleLoader {
   private clonedRepoPath: string | null = null;
   private activeVariant: AidlcVariant = getDefaultVariant();
-  private activeChannel: 'release' | 'preview' = 'release';
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -57,59 +56,46 @@ export class RuleLoader {
    */
   setVariant(variant: AidlcVariant): void {
     this.activeVariant = variant;
-    this.activeChannel = variant.channel;
     // Persist the underlying id; 'custom' is a transient overlay, not a stored id.
     const persistId = variant.id === 'custom' ? 'aws' : variant.id;
     this.context.workspaceState.update('aidlc.variantId', persistId);
-    this.context.workspaceState.update('aidlc.channel', variant.channel);
-  }
-
-  /**
-   * Stamp the resolved channel onto a variant so `loader.variant.channel`
-   * reflects what restoreVariant() decided (the catalog entries default to
-   * 'release').
-   */
-  private withChannel(variant: AidlcVariant, channel: 'release' | 'preview'): AidlcVariant {
-    return { ...variant, channel };
   }
 
   /**
    * Restore the variant on extension activation so version checks, updates, and
-   * doctor commands all target the right repo/channel for an already-configured
+   * doctor commands all target the right repo for an already-configured
    * workspace.
    *
    * Strategy (in priority order):
    *  1. AUTHORITATIVE — on-disk install metadata (`readAidlcInstall()`): the
    *     installer's own `aidlc.settings.json` / `versions/<ver>/version.json`
-   *     carry the real variant + channel and keep working even when the `aidlc`
-   *     binary can't be executed (e.g. the F5 host). This OVERRIDES a stale
-   *     persisted value and reconciles the cache so it self-heals.
-   *  2. Persisted variant id + channel in workspaceState (set by setVariant()).
-   *  3. File heuristic: `.kiro/tools/aidlc-utility.ts` present → Amadeus
-   *     (release channel); AWS native does not ship this file.
-   *  4. Binary `--version` probe: classify the stdout (amadeus/preview vs a
-   *     plain awslabs semver → AWS).
-   *  5. Default AWS/release (no persistence).
+   *     carry the real variant and keep working even when the `aidlc` binary
+   *     can't be executed (e.g. the F5 host). This OVERRIDES a stale persisted
+   *     value and reconciles the cache so it self-heals.
+   *  2. Persisted variant id in workspaceState (set by setVariant()).
+   *  3. File heuristic: `.kiro/tools/aidlc-utility.ts` present → Amadeus;
+   *     AWS native does not ship this file.
+   *  4. Binary `--version` probe: classify the stdout (amadeus vs a plain
+   *     awslabs semver → AWS).
+   *  5. Default AWS (no persistence).
    *
-   * Returns the resolved variant (channel-stamped) so callers (extension.ts)
-   * can sync it into other services (e.g. UpdateChecker) immediately.
+   * Returns the resolved variant so callers (extension.ts) can sync it into
+   * other services (e.g. UpdateChecker) immediately.
    */
   async restoreVariant(): Promise<AidlcVariant> {
     // 1. AUTHORITATIVE: on-disk install metadata.
     const install = await readAidlcInstall();
     if (install) {
-      this.setResolved(install.variantId, install.channel, 'on-disk install metadata');
+      this.setResolved(install.variantId, 'on-disk install metadata');
       return this.activeVariant;
     }
 
-    // 2. Persisted id + channel.
+    // 2. Persisted id.
     const persistedId = this.context.workspaceState.get<string>('aidlc.variantId');
     if (persistedId) {
-      const channel = this.context.workspaceState.get<'release' | 'preview'>('aidlc.channel') ?? 'release';
-      this.activeVariant = this.withChannel(getVariant(persistedId), channel);
-      this.activeChannel = channel;
+      this.activeVariant = getVariant(persistedId);
       this.outputChannel?.appendLine(
-        `Variant resolved from persisted workspaceState: ${persistedId}/${channel}`
+        `Variant resolved from persisted workspaceState: ${persistedId}`
       );
       return this.activeVariant;
     }
@@ -122,7 +108,7 @@ export class RuleLoader {
       );
       try {
         await vscode.workspace.fs.stat(bunToolUri);
-        this.setResolved('amadeus', 'release', 'workspace file heuristic (aidlc-utility.ts)');
+        this.setResolved('amadeus', 'workspace file heuristic (aidlc-utility.ts)');
         return this.activeVariant;
       } catch { /* not found — not an Amadeus clone, fall through */ }
     }
@@ -132,38 +118,35 @@ export class RuleLoader {
       const { stdout } = await Shell.run('aidlc --version', { timeout: 10000 });
       const classified = classifyVariant(stdout, '');
       if (classified.variantId === 'amadeus') {
-        this.setResolved('amadeus', classified.channel, 'binary --version probe');
+        this.setResolved('amadeus', 'binary --version probe');
         return this.activeVariant;
       }
       // Plain awslabs semver → AWS default (no persistence).
       this.outputChannel?.appendLine('Variant resolved to AWS from binary --version probe');
     } catch { /* binary not runnable */ }
 
-    // 5. Default: AWS/release (or unconfigured workspace). No persistence.
+    // 5. Default: AWS (or unconfigured workspace). No persistence.
     this.outputChannel?.appendLine('Variant resolved to AWS default (no signal matched)');
-    return this.activeVariant; // already getDefaultVariant() (aws/release)
+    return this.activeVariant; // already getDefaultVariant() (aws)
   }
 
   /**
-   * Apply a resolved variant id + channel: stamp the active variant, reconcile
-   * the persisted cache (both keys), and log which signal won.
+   * Apply a resolved variant id: stamp the active variant, reconcile the
+   * persisted cache, and log which signal won.
    */
   private setResolved(
     variantId: 'aws' | 'amadeus',
-    channel: 'release' | 'preview',
     signal: string
   ): void {
-    this.activeVariant = this.withChannel(getVariant(variantId), channel);
-    this.activeChannel = channel;
+    this.activeVariant = getVariant(variantId);
     this.context.workspaceState.update('aidlc.variantId', variantId);
-    this.context.workspaceState.update('aidlc.channel', channel);
     this.outputChannel?.appendLine(
-      `Variant resolved from ${signal}: ${variantId}/${channel}`
+      `Variant resolved from ${signal}: ${variantId}`
     );
   }
 
   get variant(): AidlcVariant {
-    return this.withChannel(this.activeVariant, this.activeChannel);
+    return this.activeVariant;
   }
 
   /**
@@ -322,6 +305,36 @@ export class RuleLoader {
   }
 
   /**
+   * CLI-FIRST workspace configuration. When the `aidlc` CLI is already present
+   * on the machine, configuring THIS project is just `aidlc config --harness
+   * <h> --yes` — no clone, no dist-copy, no installer run. The harness is
+   * resolved from the given variant (host IDE clamped to what the variant
+   * ships), and the call reuses runAidlcConfig verbatim (absolute-path binary
+   * resolution + config-conflict handling).
+   *
+   * Used by both setup (CLI-present branch) and workspace update. Throws on
+   * failure so the caller can fall back to the clone/dist path.
+   */
+  async configureWorkspaceForVariant(
+    workspaceUri: vscode.Uri,
+    variant: AidlcVariant
+  ): Promise<void> {
+    const { harness, fellBack } = resolveHarness(variant);
+    if (fellBack) {
+      this.outputChannel?.appendLine(
+        `Note: ${variant.label} does not provide a harness for this IDE; configuring "${harness}" instead.`
+      );
+    }
+    this.outputChannel?.appendLine(
+      `Configuring workspace with the installed aidlc CLI (aidlc config --harness ${harness})...`
+    );
+    await this.runAidlcConfig(workspaceUri, harness);
+    // Keep the freshly-configured CLI reachable from Kiro's non-interactive
+    // hook shells (Mac/Unix). No-op on Windows.
+    this.ensureAidlcOnPath();
+  }
+
+  /**
    * Run `aidlc config --harness <harness>`. The freshly-installed binary is
    * usually not yet on this process's PATH, so resolve it by its known install
    * location FIRST (absolute path), falling back to a bare-PATH `aidlc` only as
@@ -387,41 +400,40 @@ export class RuleLoader {
   }
 
   /**
-   * Check if AIDLC is available. Capability-based: configured when EITHER the
-   * in-workspace clone-copy layout exists (skills + memory) OR a resolvable
-   * `aidlc` binary/metadata reports a version. This keeps the status correct
-   * for native-installer users whose framework lives outside the workspace.
+   * Check whether the AIDLC framework is installed in THIS workspace.
+   *
+   * This is workspace-scoped on purpose: it answers "is this project set up?",
+   * NOT "is an `aidlc` CLI available on this machine?". A globally-installed
+   * CLI with an empty/unconfigured project folder must report `false` so the
+   * Setup row offers setup rather than falsely showing "Installed". The
+   * machine-wide CLI presence/version is surfaced separately by the
+   * "Installed CLI" row (see UpdateChecker / aidlcInstallReader), so we do NOT
+   * OR it in here.
+   *
+   * Configured == the framework files a real install writes into the project:
+   * the `/aidlc` skill plus the workspace shell memory dir. Both are produced
+   * by every supported install path (native `aidlc config`, the Amadeus CLI
+   * path, and the custom clone-copy), so requiring both is a reliable signal.
    */
   async isWorkspaceConfigured(): Promise<boolean> {
-    // 1. In-workspace clone-copy layout.
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      const skillUri = vscode.Uri.joinPath(
-        workspaceFolder.uri, '.kiro', 'skills', 'aidlc', 'SKILL.md'
-      );
-      const shellUri = vscode.Uri.joinPath(
-        workspaceFolder.uri, 'aidlc', 'spaces', 'default', 'memory'
-      );
-      try {
-        await vscode.workspace.fs.stat(skillUri);
-        await vscode.workspace.fs.stat(shellUri);
-        return true;
-      } catch { /* no clone-copy layout — fall through to the binary check */ }
+    if (!workspaceFolder) {
+      return false;
     }
 
-    // 2. On-disk install metadata reports a version.
+    const skillUri = vscode.Uri.joinPath(
+      workspaceFolder.uri, '.kiro', 'skills', 'aidlc', 'SKILL.md'
+    );
+    const shellUri = vscode.Uri.joinPath(
+      workspaceFolder.uri, 'aidlc', 'spaces', 'default', 'memory'
+    );
     try {
-      const install = await readAidlcInstall();
-      if (install?.currentVersion) { return true; }
-    } catch { /* no metadata */ }
-
-    // 3. A bare-PATH binary reports a semver.
-    try {
-      const { stdout } = await Shell.run('aidlc --version', { timeout: 10000 });
-      if (/\d+\.\d+\.\d+/.test(stdout)) { return true; }
-    } catch { /* not on PATH */ }
-
-    return false;
+      await vscode.workspace.fs.stat(skillUri);
+      await vscode.workspace.fs.stat(shellUri);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -576,9 +588,19 @@ export class RuleLoader {
     } catch {
       await Shell.removeDir(this.clonedRepoPath);
       this.clonedRepoPath = null;
+      // This is the LEGACY clone/dist fallback failing on a 2.10+ repo that no
+      // longer ships a `dist/<harness>/` tree. Guide the user to the preferred
+      // CLI-first path rather than leaving a bare "not found" message.
+      this.outputChannel?.appendLine(
+        `[AIDLC fallback] The legacy clone/dist path could not find ${distRel}/ in the cloned repo. ` +
+        'Modern AI-DLC (2.10+) installs via the `aidlc` CLI and no longer ships this dist layout.'
+      );
       throw new Error(
-        `${distRel}/ not found in the cloned repo. This variant may not ship a ` +
-        `"${harness}" harness, or the repository structure may have changed.`
+        `${distRel}/ not found in the cloned repo. Modern AI-DLC (2.10+) no longer ships a ` +
+        `"dist/${harness}" layout — it installs via the \`aidlc\` CLI instead. ` +
+        'Install the `aidlc` CLI (it is detected automatically and avoids this legacy clone/dist path ' +
+        'entirely), then re-run setup. This variant may also simply not ship a ' +
+        `"${harness}" harness, or its repository structure may have changed.`
       );
     }
 
