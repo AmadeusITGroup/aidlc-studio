@@ -29,8 +29,8 @@ describe('parseRepoAidlcVersion', () => {
   });
 
   it('parses a pre-release / suffixed value', () => {
-    expect(parseRepoAidlcVersion('export const AIDLC_VERSION = "2.10.0-preview.3";')).toBe(
-      '2.10.0-preview.3'
+    expect(parseRepoAidlcVersion('export const AIDLC_VERSION = "2.10.0-1a.1.1.0";')).toBe(
+      '2.10.0-1a.1.1.0'
     );
   });
 

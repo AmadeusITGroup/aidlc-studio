@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { isPreviewVersion } from './variantDetector';
 
 /**
  * Reads the authoritative AI-DLC install metadata the installer writes on
@@ -12,13 +11,12 @@ import { isPreviewVersion } from './variantDetector';
  * READ-ONLY: this only READS the installer's own files (install metadata,
  * NOT AI-DLC framework/workspace state) for detection. It never writes.
  *
- * CONFIRMED on a real Windows machine with a manual Amadeus PREVIEW install:
+ * CONFIRMED on a real Windows machine with a manual Amadeus install:
  *  - `%LOCALAPPDATA%\aidlc\aidlc.settings.json` carries the authoritative
  *    Artifactory `release-base-url` (ending in `/cli`).
  *  - `%LOCALAPPDATA%\aidlc\versions\<semver>\version.json` carries the full
- *    `amadeusVersion` (e.g. `2.10.0-1a.1.1.0-preview.3`). The presence of
- *    `amadeusVersion` marks the install as AMADEUS; a `-preview` token in it
- *    marks the PREVIEW channel.
+ *    `amadeusVersion` (e.g. `2.10.0-1a.1.1.0`). The presence of
+ *    `amadeusVersion` marks the install as AMADEUS.
  *
  * No `vscode` import is needed by the pure helpers below (they take raw file
  * text and a directory listing), so they stay unit-testable in isolation. The
@@ -43,13 +41,11 @@ export const AIDLC_ACTIVE_VERSION_FILE = 'active-version';
 export interface AidlcInstallInfo {
   /**
    * Full current version string — `amadeusVersion` when present (e.g.
-   * `2.10.0-1a.1.1.0-preview.3`), else the plain `version`, else null.
+   * `2.10.0-1a.1.1.0`), else the plain `version`, else null.
    */
   currentVersion: string | null;
   /** Variant classified from the on-disk metadata. */
   variantId: 'aws' | 'amadeus';
-  /** Channel classified from the on-disk metadata. */
-  channel: 'release' | 'preview';
   /**
    * Authoritative Artifactory feed base (`release-base-url`) from
    * aidlc.settings.json, or null when absent (AWS installs have none).
@@ -125,21 +121,20 @@ function compareSemver(a: string, b: string): number {
 }
 
 /**
- * Classify variant + channel + current version from a parsed version.json
- * object. The authoritative signals (confirmed on a real machine):
- *  - `amadeusVersion` present  → AMADEUS. Its value is the FULL current
- *    version; a `-preview` token (or any pre-release tail) in it  → preview.
+ * Classify variant + current version from a parsed version.json object. The
+ * authoritative signals (confirmed on a real machine):
+ *  - `amadeusVersion` present  → AMADEUS. Its value is the FULL current version.
  *  - else `version` present    → treat as current version; absent any Amadeus
- *    marker, classify as AWS/release.
+ *    marker, classify as AWS.
  *
  * `hasFeedUrl` (an Artifactory release-base-url from settings) is an additional
- * authoritative Amadeus signal OR'd in, so a release-channel Amadeus install
- * (no preview token) is still classified as amadeus.
+ * authoritative Amadeus signal OR'd in, so an Amadeus install with no
+ * `amadeusVersion` is still classified as amadeus.
  */
 export function classifyFromVersionJson(
   parsed: unknown,
   hasFeedUrl: boolean
-): { currentVersion: string | null; variantId: 'aws' | 'amadeus'; channel: 'release' | 'preview' } {
+): { currentVersion: string | null; variantId: 'aws' | 'amadeus' } {
   const obj = (parsed ?? {}) as Record<string, unknown>;
   const amadeusVersion = typeof obj.amadeusVersion === 'string' ? obj.amadeusVersion.trim() : '';
   const plainVersion = typeof obj.version === 'string' ? obj.version.trim() : '';
@@ -148,15 +143,12 @@ export function classifyFromVersionJson(
     return {
       currentVersion: amadeusVersion,
       variantId: 'amadeus',
-      channel: isPreviewVersion(amadeusVersion) ? 'preview' : 'release',
     };
   }
 
   // No amadeusVersion: the Artifactory feed URL still marks an Amadeus install.
   const variantId: 'aws' | 'amadeus' = hasFeedUrl ? 'amadeus' : 'aws';
-  const channel: 'release' | 'preview' =
-    plainVersion && isPreviewVersion(plainVersion) ? 'preview' : 'release';
-  return { currentVersion: plainVersion || null, variantId, channel };
+  return { currentVersion: plainVersion || null, variantId };
 }
 
 /**

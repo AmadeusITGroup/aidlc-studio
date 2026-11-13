@@ -3,7 +3,7 @@
   "displayName": "AI-DLC Studio",
   "description": "Accelerate AI-Driven Development Life Cycle workflows in Kiro/VS Code — guided setup, workflow orchestration, progress tracking, and standards enforcement.",
   "icon": "resources/icon.png",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "AmadeusITGroup",
   "license": "MIT",
   "repository": {
@@ -171,7 +171,19 @@
       },
       {
         "command": "amadeus-aidlc.updateRules",
-        "title": "Update AIDLC Rules",
+        "title": "Update AIDLC (CLI, then Workspace)",
+        "category": "AIDLC Studio",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "amadeus-aidlc.updateCli",
+        "title": "Update AIDLC CLI",
+        "category": "AIDLC Studio",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "amadeus-aidlc.updateWorkspace",
+        "title": "Refresh AIDLC Workspace",
         "category": "AIDLC Studio",
         "icon": "$(sync)"
       },
@@ -310,8 +322,13 @@
           "group": "inline@3"
         },
         {
-          "command": "amadeus-aidlc.updateRules",
+          "command": "amadeus-aidlc.updateCli",
           "when": "view == amadeus-aidlc.system && viewItem == system-update",
+          "group": "inline"
+        },
+        {
+          "command": "amadeus-aidlc.updateWorkspace",
+          "when": "view == amadeus-aidlc.system && viewItem == system-repo-version",
           "group": "inline"
         }
       ],

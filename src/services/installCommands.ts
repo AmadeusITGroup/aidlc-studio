@@ -68,18 +68,49 @@ export function aidlcBinaryCandidates(platform: NodeJS.Platform, home: string): 
  *   1. The machine installer is `install-aidlc.ps1` (Windows) /
  *      `install-aidlc.sh` (Unix) and is invoked with `-SkipCredentials`
  *      (Windows) / `--skip-credentials` (Unix) to install the CLI only.
- *   2. `scriptPathOrUrl` is the location of that script — whether it is a
- *      remote-pipeable URL or a local path obtained via an SSO clone first is
- *      NOT yet verified. This builder only shapes the invocation; HOW the
- *      script is obtained is the caller's concern (RuleLoader).
+ *   2. `scriptPathOrUrl` is the location of that script. It may be a remote URL
+ *      (the installer's published Artifactory location) or a LOCAL path (a
+ *      script obtained via an SSO clone first). This builder shapes BOTH cases
+ *      correctly; HOW the script is obtained is the caller's concern
+ *      (RuleLoader).
+ *
+ * BUG FIX (structural): PowerShell's `-File` parameter requires a LOCAL path —
+ * it CANNOT be a URL (passing one fails with "Illegal characters in path").
+ * The previous shape `powershell ... -File "<url>"` was therefore broken for
+ * the common remote-installer case. We now branch on whether scriptPathOrUrl
+ * is a remote URL:
+ *   - Remote URL (Windows): download-then-run via `irm '<url>' | iex` inside a
+ *     scriptblock so named params (`-SkipCredentials`) still flow through —
+ *     exactly the mechanism the AWS native path (buildNativeInstallCommand)
+ *     uses. `-File` is NEVER handed a URL.
+ *   - Local path (Windows): run it with `-File`, which is valid for a real
+ *     filesystem path (the SSO-clone fallback case).
+ *   - Unix: `curl -fsSL <url> | sh -s -- --skip-credentials` for a remote URL;
+ *     `sh "<path>" --skip-credentials` for a local path. `sh <url>` is never
+ *     issued (sh cannot fetch a URL).
  */
 export function buildAmadeusMachineSetupCommand(
   platform: NodeJS.Platform,
   scriptPathOrUrl: string
 ): string {
+  const isRemoteUrl = /^https?:\/\//i.test(scriptPathOrUrl);
+
   if (platform === 'win32') {
+    if (isRemoteUrl) {
+      // Remote: fetch the script text and invoke it as a scriptblock so the
+      // named `-SkipCredentials` param flows through. `-File` is NOT usable
+      // with a URL, which is the exact bug this replaces.
+      return `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm '${scriptPathOrUrl}'))) -SkipCredentials"`;
+    }
+    // Local path: `-File` is valid for a real filesystem path.
     return `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPathOrUrl}" -SkipCredentials`;
   }
+
+  if (isRemoteUrl) {
+    // Remote: pipe the fetched script into sh, forwarding the flag via `-s --`.
+    return `curl -fsSL ${scriptPathOrUrl} | sh -s -- --skip-credentials`;
+  }
+  // Local path: run the file directly.
   return `sh "${scriptPathOrUrl}" --skip-credentials`;
 }
 

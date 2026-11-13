@@ -85,25 +85,34 @@ describe('isWorkspaceConfigured', () => {
     expect(await loader.isWorkspaceConfigured()).toBe(true);
   });
 
-  it('returns true when only a binary reports a version', async () => {
-    // No layout files; binary probe (bare PATH fallback) returns a version.
+  it('returns FALSE when only a global binary exists but the workspace is empty', async () => {
+    // Workspace-scoped: a machine-wide `aidlc` CLI must NOT make an empty
+    // project report "configured" (that falsely showed Setup as Installed in
+    // an empty folder). The global CLI is surfaced by the Installed CLI row.
     shellRun = async (cmd) =>
       cmd.includes('--version')
         ? { stdout: 'aidlc 2.9.1', stderr: '' }
         : Promise.reject(new Error('no'));
     const loader = new RuleLoader(makeContext());
-    expect(await loader.isWorkspaceConfigured()).toBe(true);
+    expect(await loader.isWorkspaceConfigured()).toBe(false);
   });
 
-  it('returns false when neither layout nor binary is present', async () => {
+  it('returns false when the workspace layout is absent', async () => {
+    const loader = new RuleLoader(makeContext());
+    expect(await loader.isWorkspaceConfigured()).toBe(false);
+  });
+
+  it('returns false when only the skill file exists (partial layout)', async () => {
+    existingPaths.add('/ws/.kiro/skills/aidlc/SKILL.md');
     const loader = new RuleLoader(makeContext());
     expect(await loader.isWorkspaceConfigured()).toBe(false);
   });
 });
 
 describe('restoreVariant', () => {
-  it('classifies a binary-only Amadeus preview install as amadeus/preview (not AWS)', async () => {
-    // No persisted id, no aidlc-utility.ts; binary reports a preview version.
+  it('classifies a binary-only Amadeus install (pre-release tail) as amadeus (not AWS)', async () => {
+    // No persisted id, no aidlc-utility.ts; binary reports an Amadeus version
+    // with a pre-release tail.
     shellRun = async (cmd) =>
       cmd.includes('--version')
         ? { stdout: 'aidlc 2.10.0-1a.1.0.0', stderr: '' }
@@ -111,9 +120,7 @@ describe('restoreVariant', () => {
     const loader = new RuleLoader(makeContext());
     const variant = await loader.restoreVariant();
     expect(variant.id).toBe('amadeus');
-    expect(variant.channel).toBe('preview');
     expect(workspaceState.get('aidlc.variantId')).toBe('amadeus');
-    expect(workspaceState.get('aidlc.channel')).toBe('preview');
   });
 
   it('defaults to AWS when the binary reports a plain awslabs semver', async () => {
@@ -126,108 +133,20 @@ describe('restoreVariant', () => {
     expect(variant.id).toBe('aws');
   });
 
-  it('classifies from on-disk version.json (amadeus preview) without running the binary', async () => {
-    // No persisted id, no aidlc-utility.ts, and the binary is NOT runnable
-    // (mirrors the F5 host). The on-disk install metadata is the authoritative
-    // signal and must resolve amadeus/preview.
-    const path = await import('path');
-    const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
-    const root =
-      process.platform === 'win32'
-        ? path.win32.join(process.env.LOCALAPPDATA ?? path.win32.join(home, 'AppData', 'Local'), 'aidlc')
-        : path.posix.join(home, '.aidlc');
-    const join = process.platform === 'win32' ? path.win32.join : path.posix.join;
-
-    diskFiles.set(
-      join(root, 'aidlc.settings.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        'release-base-url':
-          'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli',
-      })
-    );
-    diskDirs.set(join(root, 'versions'), ['2.10.0']);
-    diskFiles.set(
-      join(root, 'versions', '2.10.0', 'version.json'),
-      JSON.stringify({ schemaVersion: 1, version: '2.10.0', amadeusVersion: '2.10.0-1a.1.1.0-preview.3' })
-    );
-
-    const loader = new RuleLoader(makeContext());
-    const variant = await loader.restoreVariant();
-    expect(variant.id).toBe('amadeus');
-    expect(variant.channel).toBe('preview');
-    expect(workspaceState.get('aidlc.variantId')).toBe('amadeus');
-    expect(workspaceState.get('aidlc.channel')).toBe('preview');
-  });
-
-  it('restores a persisted amadeus preview variant with its channel', async () => {
+  it('restores a persisted amadeus variant', async () => {
     workspaceState.set('aidlc.variantId', 'amadeus');
-    workspaceState.set('aidlc.channel', 'preview');
     const loader = new RuleLoader(makeContext());
     const variant = await loader.restoreVariant();
     expect(variant.id).toBe('amadeus');
-    expect(variant.channel).toBe('preview');
-  });
-
-  /** Lay down an Amadeus PREVIEW install under the user's install dir. */
-  async function seedAmadeusPreviewInstall() {
-    const path = await import('path');
-    const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
-    const root =
-      process.platform === 'win32'
-        ? path.win32.join(process.env.LOCALAPPDATA ?? path.win32.join(home, 'AppData', 'Local'), 'aidlc')
-        : path.posix.join(home, '.aidlc');
-    const join = process.platform === 'win32' ? path.win32.join : path.posix.join;
-
-    diskFiles.set(
-      join(root, 'aidlc.settings.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        'release-base-url':
-          'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli',
-      })
-    );
-    diskDirs.set(join(root, 'versions'), ['2.10.0']);
-    diskFiles.set(
-      join(root, 'versions', '2.10.0', 'version.json'),
-      JSON.stringify({ schemaVersion: 1, version: '2.10.0', amadeusVersion: '2.10.0-1a.1.1.0-preview.3' })
-    );
-  }
-
-  it('on-disk amadeus-preview wins over a STALE persisted aws id (reconciles the cache)', async () => {
-    // A pre-fix setup run persisted the wrong variant. The on-disk metadata is
-    // authoritative and must override it, and the persisted cache must be
-    // reconciled so it self-heals.
-    workspaceState.set('aidlc.variantId', 'aws');
-    await seedAmadeusPreviewInstall();
-    const loader = new RuleLoader(makeContext());
-    const variant = await loader.restoreVariant();
-    expect(variant.id).toBe('amadeus');
-    expect(variant.channel).toBe('preview');
-    expect(workspaceState.get('aidlc.variantId')).toBe('amadeus');
-    expect(workspaceState.get('aidlc.channel')).toBe('preview');
-  });
-
-  it('on-disk preview wins over a persisted amadeus/release channel', async () => {
-    workspaceState.set('aidlc.variantId', 'amadeus');
-    workspaceState.set('aidlc.channel', 'release');
-    await seedAmadeusPreviewInstall();
-    const loader = new RuleLoader(makeContext());
-    const variant = await loader.restoreVariant();
-    expect(variant.id).toBe('amadeus');
-    expect(variant.channel).toBe('preview');
-    expect(workspaceState.get('aidlc.channel')).toBe('preview');
   });
 
   it('uses persisted state when there is no on-disk install metadata', async () => {
     // No disk files/dirs seeded → readAidlcInstall() returns null → fall back
     // to the persisted cache.
     workspaceState.set('aidlc.variantId', 'amadeus');
-    workspaceState.set('aidlc.channel', 'preview');
     const loader = new RuleLoader(makeContext());
     const variant = await loader.restoreVariant();
     expect(variant.id).toBe('amadeus');
-    expect(variant.channel).toBe('preview');
   });
 
   it('falls back to the binary probe / aws default when nothing persisted and no on-disk metadata', async () => {

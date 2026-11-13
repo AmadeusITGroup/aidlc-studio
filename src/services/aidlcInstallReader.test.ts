@@ -50,9 +50,22 @@ describe('aidlcInstallRoot', () => {
   });
 
   it('falls back to <home>\\AppData\\Local\\aidlc when LOCALAPPDATA is unset', () => {
-    expect(aidlcInstallRoot('win32', 'C:\\Users\\sns', undefined)).toBe(
-      'C:\\Users\\sns\\AppData\\Local\\aidlc'
-    );
+    // Passing `undefined` would trigger the parameter's default
+    // (`process.env.LOCALAPPDATA`), which on a CI runner is the runner's real
+    // LOCALAPPDATA (e.g. C:\Users\runneradmin\...) and breaks the assertion.
+    // Clear the env so the default resolves to undefined and the true
+    // home-derived fallback branch is exercised deterministically.
+    const original = process.env.LOCALAPPDATA;
+    delete process.env.LOCALAPPDATA;
+    try {
+      expect(aidlcInstallRoot('win32', 'C:\\Users\\sns', undefined)).toBe(
+        'C:\\Users\\sns\\AppData\\Local\\aidlc'
+      );
+    } finally {
+      if (original !== undefined) {
+        process.env.LOCALAPPDATA = original;
+      }
+    }
   });
 
   it('resolves ~/.aidlc on Unix', () => {
@@ -96,33 +109,30 @@ describe('pickHighestVersionDir', () => {
 });
 
 describe('classifyFromVersionJson', () => {
-  it('classifies the real PREVIEW version.json as amadeus/preview with the full version', () => {
+  it('classifies a real amadeusVersion (with a pre-release tail) as amadeus with the full version', () => {
     const parsed = {
       schemaVersion: 1,
       version: '2.10.0',
-      amadeusVersion: '2.10.0-1a.1.1.0-preview.3',
+      amadeusVersion: '2.10.0-1a.1.1.0',
       date: '2026-10-23',
     };
     expect(classifyFromVersionJson(parsed, true)).toEqual({
-      currentVersion: '2.10.0-1a.1.1.0-preview.3',
+      currentVersion: '2.10.0-1a.1.1.0',
       variantId: 'amadeus',
-      channel: 'preview',
     });
   });
 
-  it('classifies an amadeusVersion with no preview token as amadeus/release', () => {
+  it('classifies a plain amadeusVersion as amadeus', () => {
     expect(classifyFromVersionJson({ version: '2.10.0', amadeusVersion: '2.10.0' }, true)).toEqual({
       currentVersion: '2.10.0',
       variantId: 'amadeus',
-      channel: 'release',
     });
   });
 
-  it('classifies a plain version with a feed URL as amadeus (release)', () => {
+  it('classifies a plain version with a feed URL as amadeus', () => {
     expect(classifyFromVersionJson({ version: '2.10.0' }, true)).toEqual({
       currentVersion: '2.10.0',
       variantId: 'amadeus',
-      channel: 'release',
     });
   });
 
@@ -130,7 +140,6 @@ describe('classifyFromVersionJson', () => {
     expect(classifyFromVersionJson({ version: '2.10.0' }, false)).toEqual({
       currentVersion: '2.10.0',
       variantId: 'aws',
-      channel: 'release',
     });
   });
 
@@ -138,7 +147,6 @@ describe('classifyFromVersionJson', () => {
     expect(classifyFromVersionJson(null, false)).toEqual({
       currentVersion: null,
       variantId: 'aws',
-      channel: 'release',
     });
   });
 });
@@ -163,29 +171,27 @@ describe('readAidlcInstall (active-version folder selection)', () => {
   // host's native separator.
   const root = aidlcInstallRoot('linux', '/home/u');
   const versionsDir = path.join(root, 'versions');
-  // RELEASE amadeus build: amadeusVersion carries NO preview token / pre-release
-  // tail, so isPreviewVersion() is false → channel 'release'.
-  const releaseJson = JSON.stringify({ version: '2.9.0', amadeusVersion: '2.9.0' });
-  const previewJson = JSON.stringify({
+  const olderJson = JSON.stringify({ version: '2.9.0', amadeusVersion: '2.9.0' });
+  const newerJson = JSON.stringify({
     version: '2.10.0',
-    amadeusVersion: '2.10.0-1a.1.1.0-preview.3',
+    amadeusVersion: '2.10.0-1a.1.1.0',
   });
   const settings = JSON.stringify({ 'release-base-url': 'https://repo.example/cli' });
 
-  function seedTwoChannelFolders(): void {
-    // A higher-semver PREVIEW folder coexists with the active RELEASE folder —
+  function seedTwoVersionFolders(): void {
+    // A higher-semver folder coexists with the active lower-semver folder —
     // the exact stale-folder trap from the bug report.
     fsState.dirs.set(versionsDir, [
       ['2.9.0', 2],
       ['2.10.0', 2],
     ]);
-    fsState.files.set(path.join(versionsDir, '2.9.0', 'version.json'), releaseJson);
-    fsState.files.set(path.join(versionsDir, '2.10.0', 'version.json'), previewJson);
+    fsState.files.set(path.join(versionsDir, '2.9.0', 'version.json'), olderJson);
+    fsState.files.set(path.join(versionsDir, '2.10.0', 'version.json'), newerJson);
     fsState.files.set(path.join(root, 'aidlc.settings.json'), settings);
   }
 
-  it('(a) honors active-version pointing at the RELEASE folder over a higher PREVIEW folder', async () => {
-    seedTwoChannelFolders();
+  it('(a) honors active-version pointing at the lower folder over a higher one', async () => {
+    seedTwoVersionFolders();
     fsState.files.set(path.join(root, 'active-version'), '2.9.0\n');
 
     const info = await readAidlcInstall('linux', '/home/u');
@@ -193,40 +199,39 @@ describe('readAidlcInstall (active-version folder selection)', () => {
     expect(info).toEqual({
       currentVersion: '2.9.0',
       variantId: 'amadeus',
-      channel: 'release',
       feedUrl: 'https://repo.example/cli',
     });
   });
 
-  it('(b) honors active-version pointing at the PREVIEW folder', async () => {
-    seedTwoChannelFolders();
+  it('(b) honors active-version pointing at the higher folder', async () => {
+    seedTwoVersionFolders();
     fsState.files.set(path.join(root, 'active-version'), '2.10.0');
 
     const info = await readAidlcInstall('linux', '/home/u');
 
-    expect(info?.channel).toBe('preview');
-    expect(info?.currentVersion).toBe('2.10.0-1a.1.1.0-preview.3');
+    expect(info?.variantId).toBe('amadeus');
+    expect(info?.currentVersion).toBe('2.10.0-1a.1.1.0');
   });
 
   it('(c) falls back to highest semver when active-version is absent', async () => {
-    seedTwoChannelFolders();
-    // No active-version file seeded → highest (2.10.0 preview) wins, preserving
-    // the prior behavior.
+    seedTwoVersionFolders();
+    // No active-version file seeded → highest (2.10.0) wins, preserving the
+    // prior behavior.
     const info = await readAidlcInstall('linux', '/home/u');
 
-    expect(info?.channel).toBe('preview');
-    expect(info?.currentVersion).toBe('2.10.0-1a.1.1.0-preview.3');
+    expect(info?.variantId).toBe('amadeus');
+    expect(info?.currentVersion).toBe('2.10.0-1a.1.1.0');
   });
 
   it('(d) falls back gracefully when active-version points at a missing version.json', async () => {
-    seedTwoChannelFolders();
+    seedTwoVersionFolders();
     // Pointer names a folder with no version.json on disk → fall back to the
     // highest semver folder instead of throwing.
     fsState.files.set(path.join(root, 'active-version'), '9.9.9');
 
     const info = await readAidlcInstall('linux', '/home/u');
 
-    expect(info?.channel).toBe('preview');
-    expect(info?.currentVersion).toBe('2.10.0-1a.1.1.0-preview.3');
+    expect(info?.variantId).toBe('amadeus');
+    expect(info?.currentVersion).toBe('2.10.0-1a.1.1.0');
   });
 });
