@@ -25,6 +25,8 @@ export interface DoctorResult {
   checks: DoctorCheck[];
   failures: string[];
   warnings: string[];
+  /** Raw doctor stdout + stderr, for classifiers (e.g. interactive-only PATH). */
+  raw?: string;
 }
 
 export interface DoctorCheck {
@@ -104,6 +106,7 @@ export class AidlcCli {
       checks,
       failures,
       warnings,
+      raw: `${result.stdout}\n${result.stderr}`,
     };
   }
 

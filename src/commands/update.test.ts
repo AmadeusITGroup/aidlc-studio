@@ -91,7 +91,9 @@ function makeChecker() {
 function makeLoader() {
   return {
     setVariant() { calls.push('setVariant'); },
-    async configureWorkspaceForVariant() { calls.push('configureWorkspaceForVariant'); },
+    async previewWorkspaceUpdate() { calls.push('previewWorkspaceUpdate'); return { output: 'would update 3 files', conflict: false }; },
+    async applyWorkspaceUpdate() { calls.push('applyWorkspaceUpdate'); },
+    async fixHookShellPath() { calls.push('fixHookShellPath'); return false; },
   } as unknown as RuleLoader;
 }
 
@@ -125,35 +127,48 @@ describe('UpdateCommand — split operations', () => {
     const cmd = new UpdateCommand(makeChecker(), makeChannel(), makeLoader());
     await cmd.updateCli();
     expect(calls).toContain('updateCliBinary');
-    expect(calls).not.toContain('configureWorkspaceForVariant');
+    expect(calls).not.toContain('applyWorkspaceUpdate');
   });
 
-  it('updateWorkspace runs `aidlc config` for the DETECTED variant + doctor, not the CLI upgrade', async () => {
+  it('updateWorkspace runs `aidlc config --dry-run`, asks, THEN applies (no CLI upgrade)', async () => {
+    modalChoice = 'Apply';
     const cmd = new UpdateCommand(makeChecker(), makeChannel(), makeLoader());
     await cmd.updateWorkspace();
-    expect(calls).toContain('configureWorkspaceForVariant');
+    expect(calls).toContain('previewWorkspaceUpdate');
+    expect(calls).toContain('applyWorkspaceUpdate');
+    expect(calls.indexOf('previewWorkspaceUpdate')).toBeLessThan(calls.indexOf('applyWorkspaceUpdate'));
+    expect(calls).toContain('fixHookShellPath');
     expect(calls).not.toContain('updateCliBinary');
+  });
+
+  it('updateWorkspace applies NOTHING when the user declines the modal', async () => {
+    modalChoice = undefined; // cancelled
+    const cmd = new UpdateCommand(makeChecker(), makeChannel(), makeLoader());
+    await cmd.updateWorkspace();
+    expect(calls).toContain('previewWorkspaceUpdate');
+    expect(calls).not.toContain('applyWorkspaceUpdate');
   });
 
   it('updateWorkspace refuses when no CLI is present', async () => {
     workspaceState = { ...workspaceState, cliPresent: false, refreshApplicable: false };
     const cmd = new UpdateCommand(makeChecker(), makeChannel(), makeLoader());
     await cmd.updateWorkspace();
-    expect(calls).not.toContain('configureWorkspaceForVariant');
+    expect(calls).not.toContain('applyWorkspaceUpdate');
   });
 
   it('updateWorkspace refuses when the workspace is not configured', async () => {
     workspaceState = { ...workspaceState, configured: false, refreshApplicable: false };
     const cmd = new UpdateCommand(makeChecker(), makeChannel(), makeLoader());
     await cmd.updateWorkspace();
-    expect(calls).not.toContain('configureWorkspaceForVariant');
+    expect(calls).not.toContain('applyWorkspaceUpdate');
   });
 
   it('updateRules runs CLI FIRST, THEN the workspace refresh (enforced order)', async () => {
+    modalChoice = 'Apply';
     const cmd = new UpdateCommand(makeChecker(), makeChannel(), makeLoader());
     await cmd.updateRules();
     const cliIdx = calls.indexOf('updateCliBinary');
-    const wsIdx = calls.indexOf('configureWorkspaceForVariant');
+    const wsIdx = calls.indexOf('applyWorkspaceUpdate');
     expect(cliIdx).toBeGreaterThanOrEqual(0);
     expect(wsIdx).toBeGreaterThanOrEqual(0);
     expect(cliIdx).toBeLessThan(wsIdx); // CLI before workspace

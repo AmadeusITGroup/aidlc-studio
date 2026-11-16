@@ -11,6 +11,8 @@ let shellRun: (command: string) => Promise<{ stdout: string; stderr: string }>;
 let diskFiles: Map<string, string>;
 // Map of absolute dir path -> entry names for readDirectory.
 let diskDirs: Map<string, string[]>;
+// Terminals created through vscode.window.createTerminal.
+const terminals: { opts: { name: string; shellPath: string }; sent: string[]; shown: boolean }[] = [];
 
 vi.mock('vscode', () => {
   const joinPath = (base: { path: string }, ...parts: string[]) => ({
@@ -23,6 +25,14 @@ vi.mock('vscode', () => {
       file: (p: string) => ({ path: p, fsPath: p }),
     },
     FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+    env: { appName: 'Kiro' },
+    window: {
+      createTerminal: (opts: { name: string; shellPath: string }) => {
+        terminals.push({ opts, sent: [], shown: false });
+        const t = terminals[terminals.length - 1];
+        return { show: () => { t.shown = true; }, sendText: (s: string) => { t.sent.push(s); } };
+      },
+    },
     workspace: {
       workspaceFolders: [{ uri: { path: '/ws', fsPath: '/ws' } }],
       getConfiguration: () => ({ get: (_k: string, fallback: unknown) => fallback }),
@@ -55,6 +65,7 @@ vi.mock('./shell', () => ({
 }));
 
 import { RuleLoader } from './ruleLoader';
+import { getVariant } from './variants';
 
 function makeContext() {
   return {
@@ -70,8 +81,20 @@ beforeEach(() => {
   workspaceState = new Map();
   diskFiles = new Map();
   diskDirs = new Map();
+  terminals.length = 0;
   shellRun = async () => { throw new Error('no binary'); };
 });
+
+/** Run `fn` with process.platform forced to `platform` (restored afterwards). */
+async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T> | T): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    return await fn();
+  } finally {
+    if (original) { Object.defineProperty(process, 'platform', original); }
+  }
+}
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -106,6 +129,118 @@ describe('isWorkspaceConfigured', () => {
     existingPaths.add('/ws/.kiro/skills/aidlc/SKILL.md');
     const loader = new RuleLoader(makeContext());
     expect(await loader.isWorkspaceConfigured()).toBe(false);
+  });
+});
+
+describe('launchAmadeusInstaller (README section 1, interactive terminal)', () => {
+  const winCmd =
+    '$f = Join-Path $env:TEMP "install-aidlc.ps1"; ' +
+    'curl.exe -fsSL https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.ps1 -o $f; ' +
+    'powershell -ExecutionPolicy Bypass -File $f; Remove-Item $f';
+
+  it('Windows: opens PowerShell and sends the exact download-then-run command, without child_process', async () => {
+    const calls: string[] = [];
+    shellRun = async (c) => { calls.push(c); return { stdout: '', stderr: '' }; };
+    const loader = new RuleLoader(makeContext());
+    loader.setVariant(getVariant('amadeus'));
+    await withPlatform('win32', () => { loader.launchAmadeusInstaller(); });
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0].opts).toEqual({ name: 'AIDLC Installer', shellPath: 'powershell.exe' });
+    expect(terminals[0].shown).toBe(true);
+    expect(terminals[0].sent).toEqual([winCmd]);
+    expect(calls).toEqual([]); // never awaited / never run through Shell
+  });
+
+  it('macOS and Linux: opens bash and sends bash <(curl -fsSL <sh-url>)', async () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      terminals.length = 0;
+      const loader = new RuleLoader(makeContext());
+      loader.setVariant(getVariant('amadeus'));
+      await withPlatform(platform, () => { loader.launchAmadeusInstaller(); });
+      expect(terminals[0].opts).toEqual({ name: 'AIDLC Installer', shellPath: '/bin/bash' });
+      expect(terminals[0].sent).toEqual([
+        'bash <(curl -fsSL https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.sh)',
+      ]);
+    }
+  });
+});
+
+describe('fixHookShellPath (`aidlc config runtime` is the official fix)', () => {
+  const ws = { path: '/ws', fsPath: '/ws' } as unknown as import('vscode').Uri;
+
+  it('does nothing when doctor does not report an interactive-only PATH', async () => {
+    const seen: string[] = [];
+    shellRun = async (c) => { seen.push(c); return { stdout: '', stderr: '' }; };
+    const loader = new RuleLoader(makeContext());
+    expect(await loader.fixHookShellPath(ws, '✓ all good')).toBe(false);
+    expect(await loader.fixHookShellPath(ws, undefined)).toBe(false);
+    expect(seen).toEqual([]);
+  });
+
+  it('runs `aidlc config runtime` when doctor reports it, and asks for a re-check', async () => {
+    const seen: string[] = [];
+    shellRun = async (c) => { seen.push(c); return { stdout: 'ok', stderr: '' }; };
+    const loader = new RuleLoader(makeContext());
+    expect(await loader.fixHookShellPath(ws, '⚠ aidlc is interactive-only')).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(/aidlc"? config runtime$/);
+  });
+
+  it('on failure falls back to the rc-file writer (a no-op on Windows)', async () => {
+    shellRun = async () => { throw new Error('config runtime unsupported'); };
+    const loader = new RuleLoader(makeContext());
+    // Windows is forced so the fallback never touches real rc files.
+    const result = await withPlatform('win32', () =>
+      loader.fixHookShellPath(ws, 'aidlc resolves only through the interactive PATH')
+    );
+    expect(result).toBe(false);
+  });
+});
+
+describe('workspace update (README: aidlc config --dry-run, then aidlc config)', () => {
+  const ws = { path: '/ws', fsPath: '/ws' } as unknown as import('vscode').Uri;
+
+  it('preview runs `config --dry-run` and flags conflicts', async () => {
+    const seen: string[] = [];
+    shellRun = async (c) => {
+      seen.push(c);
+      return { stdout: '1 file would change\n1 conflict: .kiro/agents/x.md (edited locally)', stderr: '' };
+    };
+    const loader = new RuleLoader(makeContext());
+    const res = await loader.previewWorkspaceUpdate(ws);
+    expect(seen[0]).toMatch(/config --dry-run$/);
+    expect(res.conflict).toBe(true);
+    expect(res.output).toContain('1 file would change');
+  });
+
+  it('apply runs `config --yes` with no --harness for an already-configured project', async () => {
+    const seen: string[] = [];
+    shellRun = async (c) => { seen.push(c); return { stdout: 'done', stderr: '' }; };
+    const loader = new RuleLoader(makeContext());
+    await loader.applyWorkspaceUpdate(ws, getVariant('amadeus'));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(/config --yes$/);
+    expect(seen[0]).not.toContain('--harness');
+  });
+
+  it('apply falls back to the resolved harness when the CLI rejects the bare form', async () => {
+    const seen: string[] = [];
+    shellRun = async (c) => {
+      seen.push(c);
+      if (/config --yes$/.test(c)) { throw new Error('missing required option --harness'); }
+      return { stdout: 'done', stderr: '' };
+    };
+    const loader = new RuleLoader(makeContext());
+    await loader.applyWorkspaceUpdate(ws, getVariant('amadeus'));
+    expect(seen.some((c) => /config --harness (kiro-ide|copilot) --yes$/.test(c))).toBe(true);
+  });
+
+  it('apply surfaces a conflict report without retrying or overwriting', async () => {
+    const seen: string[] = [];
+    shellRun = async (c) => { seen.push(c); throw new Error('1 conflict: file edited locally'); };
+    const loader = new RuleLoader(makeContext());
+    await expect(loader.applyWorkspaceUpdate(ws, getVariant('amadeus'))).rejects.toThrow(/conflicts/);
+    expect(seen).toHaveLength(1);
   });
 });
 

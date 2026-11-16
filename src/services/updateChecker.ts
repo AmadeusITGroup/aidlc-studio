@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Shell } from './shell';
 import { AidlcVariant, describeVariant, getDefaultVariant } from './variants';
-import { aidlcBinaryCandidates } from './installCommands';
+import { aidlcBinaryCandidates, amadeusManualInstallHint } from './installCommands';
 import { readAidlcInstall } from './aidlcInstallReader';
 import { detectCliPresence } from './cliPresence';
 import { readRepoAidlcVersion } from './repoVersionReader';
@@ -71,7 +71,8 @@ export interface WorkspaceUpdateState {
  *
  * APPLYING an update is still CLI-first (`aidlc update`), with the legacy
  * repo-clone/dist-copy reinstall kept ONLY as the apply fallback for the
- * custom 'git-clone-copy'/'repo-installer' variants or when a CLI apply fails.
+ * custom 'git-clone-copy'/'repo-installer' variants or when an AWS CLI apply
+ * fails. The Amadeus variant has NO such fallback (see updateAmadeusCli).
  */
 export class UpdateChecker {
   private cachedVersionInfo: VersionInfo | null = null;
@@ -345,9 +346,12 @@ export class UpdateChecker {
     }
 
     // CLI-first for AWS ('native-installer') and Amadeus ('amadeus-cli'): if a
-    // CLI is present, `aidlc update` + `aidlc config`. On failure, fall back to
-    // the clone/dist path.
+    // CLI is present, `aidlc update` + `aidlc config`. On failure, AWS falls
+    // back to the clone/dist path; Amadeus has NO such fallback.
     const presence = await detectCliPresence();
+    if (this.activeVariant.installMethod === 'amadeus-cli') {
+      return this.updateAmadeusCli(presence.present, true);
+    }
     if (presence.present) {
       try {
         return await this.updateViaNativeCli(true);
@@ -395,6 +399,9 @@ export class UpdateChecker {
     }
 
     const presence = await detectCliPresence();
+    if (this.activeVariant.installMethod === 'amadeus-cli') {
+      return this.updateAmadeusCli(presence.present, false);
+    }
     if (presence.present) {
       try {
         return await this.updateViaNativeCli(false);
@@ -413,6 +420,37 @@ export class UpdateChecker {
       'Falling back to the legacy repo-clone/dist-copy reinstall path.'
     );
     return this.updateViaRepoInstaller();
+  }
+
+  /**
+   * Amadeus 2.10+ update: `aidlc update` only. There is NO clone/dist-copy
+   * fallback (2.10+ ships no dist/; the legacy 2.5 installer is a different
+   * mode Studio does not drive). On failure, log loudly what was attempted and
+   * the underlying error, and throw a message that carries the exact official
+   * installer command for this OS.
+   */
+  private async updateAmadeusCli(cliPresent: boolean, refreshWorkspace: boolean): Promise<boolean> {
+    const urls = this.activeVariant.installScriptUrl;
+    const hint = urls ? amadeusManualInstallHint(process.platform, urls) : '';
+
+    if (!cliPresent) {
+      this.outputChannel.appendLine(
+        '[AIDLC Amadeus] `aidlc update` was requested but NO `aidlc` CLI is present. ' +
+        'There is no clone/dist-copy fallback for Amadeus AI-DLC 2.10+. ' + hint
+      );
+      throw new Error(`No \`aidlc\` CLI is installed. Run Setup to install it. ${hint}`);
+    }
+
+    try {
+      return await this.updateViaNativeCli(refreshWorkspace);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.outputChannel.appendLine(
+        `[AIDLC Amadeus] \`aidlc update\` was attempted but FAILED: ${msg}. ` +
+        'There is no clone/dist-copy fallback for Amadeus AI-DLC 2.10+. ' + hint
+      );
+      throw new Error(`${msg}. Try running \`aidlc update\` in a terminal. ${hint}`);
+    }
   }
 
   /**
@@ -648,17 +686,22 @@ export function parseCliUpdateCheck(raw: string): CliUpdateCheckResult {
  * explicit signal: an unparseable current version must NOT produce a false
  * prompt.
  */
-function isComparableVersion(v: string): boolean {
+export function isComparableVersion(v: string): boolean {
   return /\d+\.\d+\.\d+/.test(v);
 }
 
 /**
  * Compare two FULL version strings (numeric semver plus any pre-release tail).
- * The numeric semver is compared first; ties fall back to a
- * lexicographic compare of the pre-release tail (a build WITH a tail sorts
- * below the same numeric version without one, matching semver precedence).
+ * The numeric semver is compared first; ties fall back to a semver-style
+ * compare of the pre-release tail (a build WITH a tail sorts below the same
+ * numeric version without one, matching semver precedence).
+ *
+ * Amadeus builds look like `2.10.0-1a.1.10.0`: the identifiers after `1a.`
+ * (MAJOR.MINOR.PATCH) are numeric, so the tail is compared identifier by
+ * identifier, numerically where both sides are numbers (1.10.0 > 1.9.0), never
+ * as one string.
  */
-function compareFullVersion(a: string, b: string): number {
+export function compareFullVersion(a: string, b: string): number {
   const semver = (v: string): number[] => {
     const m = v.match(/(\d+)\.(\d+)\.(\d+)/);
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
@@ -679,5 +722,27 @@ function compareFullVersion(a: string, b: string): number {
   // No tail outranks a tail at the same numeric version (semver precedence).
   if (ta === '' && tb !== '') { return 1; }
   if (ta !== '' && tb === '') { return -1; }
-  return ta.localeCompare(tb);
+  return compareTail(ta, tb);
+}
+
+/** Semver-style dot-separated identifier compare; numeric ids compare numerically. */
+function compareTail(a: string, b: string): number {
+  const ia = a.split('.');
+  const ib = b.split('.');
+  const len = Math.min(ia.length, ib.length);
+  for (let i = 0; i < len; i++) {
+    const x = ia[i];
+    const y = ib[i];
+    const xNum = /^\d+$/.test(x);
+    const yNum = /^\d+$/.test(y);
+    if (xNum && yNum) {
+      const d = Number(x) - Number(y);
+      if (d !== 0) { return d; }
+    } else if (xNum !== yNum) {
+      return xNum ? -1 : 1; // numeric identifiers sort below alphanumeric
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return ia.length - ib.length; // a longer tail ranks higher when the prefix ties
 }

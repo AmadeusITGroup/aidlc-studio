@@ -34,7 +34,12 @@ vi.mock('./shell', () => ({
   },
 }));
 
-import { UpdateChecker, parseCliUpdateCheck } from './updateChecker';
+import {
+  UpdateChecker,
+  compareFullVersion,
+  isComparableVersion,
+  parseCliUpdateCheck,
+} from './updateChecker';
 import { RuleLoader, RepoAccessError } from './ruleLoader';
 import { getVariant } from './variants';
 
@@ -215,24 +220,32 @@ describe('UpdateChecker — Amadeus (CLI model) update runs `aidlc update`', () 
     expect(calls.installCount).toBe(0);
   });
 
-  it('CLI-first FALLBACK: a failed `aidlc update` reinstalls via the repo path', async () => {
+  it('NO FALLBACK: a failed `aidlc update` rejects loudly with the official command, never clones', async () => {
     shellRun = async (cmd) => {
       if (cmd.includes('update')) { throw new Error('aidlc update boom'); }
       if (cmd.includes('--version')) { return { stdout: 'aidlc 2.11.0', stderr: '' }; }
-      if (cmd.includes('curl')) { return { stdout: '2.10.0 2.11.0', stderr: '' }; }
       throw new Error(`unexpected: ${cmd}`);
     };
+    const logged: string[] = [];
+    const channel = { appendLine: (l: string) => { logged.push(l); } } as unknown as import('vscode').OutputChannel;
     const { stub, calls } = makeRuleLoaderStub();
-    const checker = new UpdateChecker(
-      makeChannel(),
-      getVariant('amadeus'),
-      stub
-    );
+    const checker = new UpdateChecker(channel, getVariant('amadeus'), stub);
 
-    await checker.pullLatest();
+    await expect(checker.updateCliBinary()).rejects.toThrow(/aidlc update boom/);
+    await expect(checker.pullLatest()).rejects.toThrow(/install-aidlc/);
 
-    // Fell back to the clone/dist reinstall path.
-    expect(calls.installCount).toBe(1);
+    // The clone/dist reinstall path must NOT run for Amadeus.
+    expect(calls.installCount).toBe(0);
+    expect(logged.some((l) => l.includes('[AIDLC Amadeus]') && l.includes('aidlc update boom'))).toBe(true);
+  });
+
+  it('NO FALLBACK: with no CLI present, the Amadeus update rejects instead of cloning', async () => {
+    shellRun = async () => { throw new Error('no cli'); };
+    const { stub, calls } = makeRuleLoaderStub();
+    const checker = new UpdateChecker(makeChannel(), getVariant('amadeus'), stub);
+
+    await expect(checker.updateCliBinary()).rejects.toThrow(/No `aidlc` CLI is installed/);
+    expect(calls.installCount).toBe(0);
   });
 
   it('routes a custom (git-clone-copy) variant through the RuleLoader reinstall path', async () => {
@@ -321,6 +334,47 @@ describe('parseCliUpdateCheck — tolerant parser for `aidlc update --check`', (
   it('is null-safe on empty/garbage input', () => {
     expect(parseCliUpdateCheck('').updateAvailable).toBeNull();
     expect(parseCliUpdateCheck(undefined as unknown as string).latestVersion).toBeNull();
+  });
+});
+
+describe('compareFullVersion — Amadeus build components compare numerically', () => {
+  it('orders 1a.1.10.0 ABOVE 1a.1.9.0 (not a string compare)', () => {
+    expect(compareFullVersion('2.10.0-1a.1.10.0', '2.10.0-1a.1.9.0')).toBeGreaterThan(0);
+    expect(compareFullVersion('2.10.0-1a.1.9.0', '2.10.0-1a.1.10.0')).toBeLessThan(0);
+    expect(compareFullVersion('2.10.0-1a.10.0.0', '2.10.0-1a.9.9.9')).toBeGreaterThan(0);
+    expect(compareFullVersion('2.10.0-1a.1.0.10', '2.10.0-1a.1.0.9')).toBeGreaterThan(0);
+  });
+
+  it('treats identical builds as equal', () => {
+    expect(compareFullVersion('2.10.0-1a.1.10.0', '2.10.0-1a.1.10.0')).toBe(0);
+  });
+
+  it('leaves plain semver (AWS) unchanged', () => {
+    expect(compareFullVersion('2.9.1', '2.9.0')).toBeGreaterThan(0);
+    expect(compareFullVersion('2.10.0', '2.9.9')).toBeGreaterThan(0);
+    expect(compareFullVersion('2.9.0', '2.9.0')).toBe(0);
+    // A tail ranks below the same numeric version without one.
+    expect(compareFullVersion('2.10.0-1a.1.0.0', '2.10.0')).toBeLessThan(0);
+    // The numeric core wins over the tail.
+    expect(compareFullVersion('2.11.0-1a.1.0.0', '2.10.0-1a.9.9.9')).toBeGreaterThan(0);
+  });
+
+  it('isComparableVersion still gates on a numeric semver core', () => {
+    expect(isComparableVersion('2.10.0-1a.1.10.0')).toBe(true);
+    expect(isComparableVersion('2.9.1')).toBe(true);
+    expect(isComparableVersion('unknown')).toBe(false);
+  });
+
+  it('flags an update only when the latest build is numerically newer', async () => {
+    shellRun = async (cmd) => {
+      if (cmd.includes('update --check')) { return { stdout: 'latest: 2.10.0-1a.1.10.0', stderr: '' }; }
+      if (cmd.includes('--version')) { return { stdout: 'aidlc 2.10.0-1a.1.9.0', stderr: '' }; }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const info = await new UpdateChecker(makeChannel(), getVariant('amadeus')).checkForUpdates();
+    expect(info.currentVersion).toBe('2.10.0-1a.1.9.0');
+    expect(info.latestVersion).toBe('2.10.0-1a.1.10.0');
+    expect(info.updateAvailable).toBe(true);
   });
 });
 

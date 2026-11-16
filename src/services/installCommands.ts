@@ -55,63 +55,98 @@ export function aidlcBinaryCandidates(platform: NodeJS.Platform, home: string): 
   ];
 }
 
+/** A terminal launch spec: the shell to open and the line to send to it. */
+export interface InstallerTerminal {
+  shellPath: string;
+  command: string;
+}
+
 /**
- * Build the Amadeus 2.10+ MACHINE-SETUP command: it installs the `aidlc` CLI
- * onto the machine only (no project is touched). The project is configured
- * afterwards with `aidlc config --harness <h>` (see RuleLoader.runAidlcConfig).
+ * Build the OFFICIAL Amadeus AI-DLC 2.10 "Set up your machine" command
+ * (README section 1) for the given platform, plus the shell it must run in.
  *
- * This is the ONE place every Amadeus machine-installer assumption lives, so
- * correcting it against a real Amadeus 2.10+ machine means editing only here.
+ *  - Windows (PowerShell, NOT as administrator): download the ps1 to %TEMP%,
+ *    run it, then delete it. Download-then-run is the only valid shape
+ *    (`-File <url>` and `irm | iex` do not work with this installer).
+ *  - macOS / Linux: `bash <(curl -fsSL <url>)`. Process substitution needs
+ *    bash, so the terminal is bash (not sh).
  *
- * ASSUMPTION pending confirmation on a real Amadeus 2.10+ machine
- * (the Amadeus repo is SSO-gated; its install-aidlc.ps1 could not be read):
- *   1. The machine installer is `install-aidlc.ps1` (Windows) /
- *      `install-aidlc.sh` (Unix) and is invoked with `-SkipCredentials`
- *      (Windows) / `--skip-credentials` (Unix) to install the CLI only.
- *   2. `scriptPathOrUrl` is the location of that script. It may be a remote URL
- *      (the installer's published Artifactory location) or a LOCAL path (a
- *      script obtained via an SSO clone first). This builder shapes BOTH cases
- *      correctly; HOW the script is obtained is the caller's concern
- *      (RuleLoader).
- *
- * BUG FIX (structural): PowerShell's `-File` parameter requires a LOCAL path —
- * it CANNOT be a URL (passing one fails with "Illegal characters in path").
- * The previous shape `powershell ... -File "<url>"` was therefore broken for
- * the common remote-installer case. We now branch on whether scriptPathOrUrl
- * is a remote URL:
- *   - Remote URL (Windows): download-then-run via `irm '<url>' | iex` inside a
- *     scriptblock so named params (`-SkipCredentials`) still flow through —
- *     exactly the mechanism the AWS native path (buildNativeInstallCommand)
- *     uses. `-File` is NEVER handed a URL.
- *   - Local path (Windows): run it with `-File`, which is valid for a real
- *     filesystem path (the SSO-clone fallback case).
- *   - Unix: `curl -fsSL <url> | sh -s -- --skip-credentials` for a remote URL;
- *     `sh "<path>" --skip-credentials` for a local path. `sh <url>` is never
- *     issued (sh cannot fetch a URL).
+ * No skip flags and no `--preview`: the README base command has none, and the
+ * interactive terminal lets the installer's credentials prompt work.
  */
-export function buildAmadeusMachineSetupCommand(
+export function buildAmadeusInstallerTerminal(
   platform: NodeJS.Platform,
-  scriptPathOrUrl: string
-): string {
-  const isRemoteUrl = /^https?:\/\//i.test(scriptPathOrUrl);
-
+  urls: { unix: string; windows: string }
+): InstallerTerminal {
   if (platform === 'win32') {
-    if (isRemoteUrl) {
-      // Remote: fetch the script text and invoke it as a scriptblock so the
-      // named `-SkipCredentials` param flows through. `-File` is NOT usable
-      // with a URL, which is the exact bug this replaces.
-      return `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm '${scriptPathOrUrl}'))) -SkipCredentials"`;
-    }
-    // Local path: `-File` is valid for a real filesystem path.
-    return `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPathOrUrl}" -SkipCredentials`;
+    return {
+      shellPath: 'powershell.exe',
+      command:
+        '$f = Join-Path $env:TEMP "install-aidlc.ps1"; ' +
+        `curl.exe -fsSL ${urls.windows} -o $f; ` +
+        'powershell -ExecutionPolicy Bypass -File $f; ' +
+        'Remove-Item $f',
+    };
   }
+  return {
+    shellPath: '/bin/bash',
+    command: `bash <(curl -fsSL ${urls.unix})`,
+  };
+}
 
-  if (isRemoteUrl) {
-    // Remote: pipe the fetched script into sh, forwarding the flag via `-s --`.
-    return `curl -fsSL ${scriptPathOrUrl} | sh -s -- --skip-credentials`;
-  }
-  // Local path: run the file directly.
-  return `sh "${scriptPathOrUrl}" --skip-credentials`;
+/**
+ * One-line hint with the exact official command, for error messages shown
+ * when an Amadeus flow fails and the user must run the installer by hand.
+ */
+export function amadeusManualInstallHint(
+  platform: NodeJS.Platform,
+  urls: { unix: string; windows: string }
+): string {
+  const { command } = buildAmadeusInstallerTerminal(platform, urls);
+  const where = platform === 'win32' ? 'PowerShell (not as administrator)' : 'a bash terminal';
+  return `To install it manually, run this in ${where}: ${command}`;
+}
+
+/**
+ * The README next steps shown right after the installer terminal is launched.
+ */
+export function amadeusInstallNextSteps(platform: NodeJS.Platform): string {
+  const after =
+    platform === 'win32'
+      ? 'When the installer finishes, quit and reopen this editor so the new PATH is picked up. ' +
+        'It must run in PowerShell, not as administrator.'
+      : 'When the installer finishes, open a new terminal so the new PATH is picked up.';
+  return (
+    `The Amadeus AI-DLC installer is running in the "AIDLC Installer" terminal. ${after} ` +
+    'Then run Setup again to configure this project. If you skipped the credentials prompt, ' +
+    'run `eve credentials amaiisdom <your-username>` before the first workflow.'
+  );
+}
+
+/**
+ * Build the access probe for a URL-gated installer: a short-timeout HEAD
+ * request. `curl.exe` on Windows (so PowerShell's `curl` alias is never hit);
+ * `curl` elsewhere. `-f` makes HTTP 4xx/5xx a non-zero exit.
+ */
+export function buildAccessProbeCommand(platform: NodeJS.Platform, url: string): string {
+  const curl = platform === 'win32' ? 'curl.exe' : 'curl';
+  return `${curl} -fsS -I --max-time 10 "${url}"`;
+}
+
+/**
+ * True when `aidlc doctor` output says `aidlc` resolves only through the
+ * interactive PATH (so the IDE's hook shells can't find it). The official fix
+ * is `aidlc config runtime`.
+ */
+export function doctorReportsInteractiveOnlyPath(text: string | undefined): boolean {
+  return /interactive[\s-]+only|only\s+(?:through|via|in)\s+the\s+interactive|interactive\s+PATH/i.test(
+    text ?? ''
+  );
+}
+
+/** True when `aidlc config` output/error reports a file conflict. */
+export function reportsConfigConflict(text: string | undefined): boolean {
+  return /conflict/i.test(text ?? '');
 }
 
 /**
@@ -121,8 +156,7 @@ export function buildAmadeusMachineSetupCommand(
  *
  * LEGACY (AI-DLC 2.5 layout): the `-Target`/`-Harness` flags are legacy-only on
  * the 2.10+ installer. Retained ONLY for the explicit git-clone-copy custom
- * fork path; the Amadeus variant no longer uses this (see
- * buildAmadeusMachineSetupCommand).
+ * fork path; the Amadeus variant never uses this.
  */
 export function buildRepoInstallerCommand(
   platform: NodeJS.Platform,

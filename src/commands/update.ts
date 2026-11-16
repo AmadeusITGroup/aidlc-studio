@@ -113,10 +113,11 @@ export class UpdateCommand {
   }
 
   /**
-   * UPDATE WORKSPACE (operation 2): re-apply the installed CLI's framework into
-   * THIS project via `aidlc config` (RuleLoader.configureWorkspaceForVariant),
-   * using the DETECTED variant from the installed CLI. Runs `aidlc doctor`
-   * afterwards, then refreshes the views. Does NOT upgrade the CLI binary.
+   * UPDATE WORKSPACE (operation 2): per the README, `aidlc config --dry-run`
+   * first, a modal confirmation, then `aidlc config --yes` (locally edited
+   * files are reported as conflicts, workflow records under aidlc/ are kept).
+   * Runs `aidlc doctor` afterwards, tells the user to start a new chat
+   * session, then refreshes the views. Does NOT upgrade the CLI binary.
    */
   async updateWorkspace(): Promise<void> {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -155,6 +156,38 @@ export class UpdateCommand {
         : this.updateChecker.variant;
       this.ruleLoader.setVariant(variant);
 
+      // README "Updating": `aidlc config --dry-run` shows what would change.
+      const preview = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Checking what would change (aidlc config --dry-run)...',
+          cancellable: false,
+        },
+        () => this.ruleLoader.previewWorkspaceUpdate(workspaceFolder.uri)
+      );
+
+      const report = (preview.output || 'No changes reported.').trim();
+      const MAX_DETAIL = 1500;
+      const detail = [
+        report.length > MAX_DETAIL
+          ? `${report.slice(0, MAX_DETAIL)}\n... (full report in the Output panel)`
+          : report,
+        preview.conflict
+          ? '\nSome files were edited locally and are reported as conflicts. They are NOT overwritten.'
+          : '',
+        '\nYour workflow records under aidlc/ are kept.',
+      ].join('\n');
+
+      const choice = await vscode.window.showInformationMessage(
+        'Apply these changes to this workspace?',
+        { modal: true, detail },
+        'Apply'
+      );
+      if (choice !== 'Apply') {
+        this.outputChannel.appendLine('Workspace refresh cancelled; nothing was changed.');
+        return;
+      }
+
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
@@ -163,21 +196,26 @@ export class UpdateCommand {
         },
         async (progress) => {
           progress.report({ message: 'Running aidlc config...', increment: 50 });
-          await this.ruleLoader.configureWorkspaceForVariant(workspaceFolder.uri, variant);
+          await this.ruleLoader.applyWorkspaceUpdate(workspaceFolder.uri, variant);
 
-          // Post-op health check, same as setup.
+          // Post-op health check, same as setup (incl. the official
+          // `aidlc config runtime` fix for an interactive-only PATH).
           progress.report({ message: 'Running aidlc doctor...', increment: 50 });
           const cli = new AidlcCli(this.outputChannel, workspaceFolder.uri);
-          const doctorResult = await cli.doctor(variant.doctorMode);
+          let doctorResult = await cli.doctor(variant.doctorMode);
+          if (await this.ruleLoader.fixHookShellPath(workspaceFolder.uri, doctorResult.raw)) {
+            doctorResult = await cli.doctor(variant.doctorMode);
+          }
 
           if (doctorResult.passed) {
             vscode.window.showInformationMessage(
-              'Workspace refreshed. All health checks pass.',
+              'Workspace refreshed. All health checks pass. Start a new chat session so the agent picks up the new files.',
               'OK'
             );
           } else {
             vscode.window.showWarningMessage(
-              `Workspace refreshed, but doctor reports ${doctorResult.failures.length} issue(s). Check output.`,
+              `Workspace refreshed, but doctor reports ${doctorResult.failures.length} issue(s). Check output. ` +
+              'Start a new chat session so the agent picks up the new files.',
               'Show Output'
             ).then((action) => {
               if (action === 'Show Output') {

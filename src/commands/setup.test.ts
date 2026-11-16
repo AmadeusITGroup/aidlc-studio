@@ -57,9 +57,10 @@ vi.mock('../services/aidlcCli', () => ({
   },
 }));
 
+const bunChecks = { count: 0 };
 vi.mock('../services/bunInstaller', () => ({
   BunInstaller: class {
-    async check() { return { installed: true, version: '1.0.0' }; }
+    async check() { bunChecks.count++; return { installed: true, version: '1.0.0' }; }
     async install() { return true; }
   },
 }));
@@ -106,10 +107,12 @@ function makeRuleLoader(opts: {
       calls.push('installViaNativeInstaller');
       if (opts.nativeThrows) { throw new Error('native failed'); }
     },
-    installViaAmadeusCli: async () => {
-      calls.push('installViaAmadeusCli');
-      if (opts.amadeusThrows) { throw new Error('amadeus failed'); }
+    launchAmadeusInstaller: () => {
+      calls.push('launchAmadeusInstaller');
+      if (opts.amadeusThrows) { throw new Error('terminal failed'); }
+      return {};
     },
+    fixHookShellPath: async () => { calls.push('fixHookShellPath'); return false; },
     installViaRepoInstaller: async () => { calls.push('installViaRepoInstaller'); },
     cloneAidlcRepo: async () => { calls.push('cloneAidlcRepo'); },
     installFramework: async () => { calls.push('installFramework'); },
@@ -120,6 +123,7 @@ function makeRuleLoader(opts: {
 beforeEach(() => {
   calls.length = 0;
   logLines.length = 0;
+  bunChecks.count = 0;
   cliPresent = false;
   detectedVariantId = null;
   quickPickId = undefined;
@@ -143,7 +147,7 @@ describe('SetupCommand — CLI-first branching', () => {
     // Configured via the CLI, never cloned/installed.
     expect(calls).toContain('configureWorkspaceForVariant');
     expect(calls).not.toContain('installViaNativeInstaller');
-    expect(calls).not.toContain('installViaAmadeusCli');
+    expect(calls).not.toContain('launchAmadeusInstaller');
     expect(calls).not.toContain('cloneAidlcRepo');
   });
 
@@ -176,7 +180,39 @@ describe('SetupCommand — CLI-first branching', () => {
     expect(calls).not.toContain('configureWorkspaceForVariant');
   });
 
-  it('CLI ABSENT + Amadeus bootstrap FAILS: falls back to the repo-clone path', async () => {
+  it('CLI ABSENT + Amadeus: launches the official installer terminal; no bun, no config, no clone', async () => {
+    cliPresent = false;
+    quickPickId = 'amadeus';
+    const loader = makeRuleLoader();
+    const cmd = new SetupCommand(loader, makeOutputChannel(), async () => undefined);
+
+    await cmd.execute();
+
+    expect(calls).toContain('launchAmadeusInstaller');
+    // The installer provides Git/Bun; Studio configures only after a re-run.
+    expect(calls).not.toContain('configureWorkspaceForVariant');
+    expect(calls).not.toContain('installViaNativeInstaller');
+    expect(calls).not.toContain('installViaRepoInstaller');
+    expect(calls).not.toContain('cloneAidlcRepo');
+    expect(calls).not.toContain('installFramework');
+    expect(calls).not.toContain('updateGitignore');
+    expect(bunChecks.count).toBe(0);
+  });
+
+  it('CLI ABSENT + Amadeus: no network access → friendly error, installer NOT launched', async () => {
+    cliPresent = false;
+    quickPickId = 'amadeus';
+    accessResult = { accessible: false, reason: "You don't have access" };
+    const loader = makeRuleLoader();
+    const cmd = new SetupCommand(loader, makeOutputChannel(), async () => undefined);
+
+    await cmd.execute();
+
+    expect(calls).not.toContain('launchAmadeusInstaller');
+    expect(calls).not.toContain('installViaRepoInstaller');
+  });
+
+  it('CLI ABSENT + Amadeus terminal launch FAILS: loud log with the official command, NO clone fallback', async () => {
     cliPresent = false;
     quickPickId = 'amadeus';
     const loader = makeRuleLoader({ amadeusThrows: true });
@@ -184,9 +220,27 @@ describe('SetupCommand — CLI-first branching', () => {
 
     await cmd.execute();
 
-    expect(calls).toContain('installViaAmadeusCli');
-    // amadeus-cli fallback goes through the clone-based official installer.
-    expect(calls).toContain('installViaRepoInstaller');
+    expect(calls).toContain('launchAmadeusInstaller');
+    expect(calls).not.toContain('installViaRepoInstaller');
+    expect(calls).not.toContain('cloneAidlcRepo');
+    expect(calls).not.toContain('installFramework');
+    expect(logLines.some((l) => l.includes('[AIDLC Amadeus]') && l.includes('terminal failed'))).toBe(true);
+    expect(logLines.some((l) => l.includes('install-aidlc'))).toBe(true);
+  });
+
+  it('CLI PRESENT + Amadeus config FAILS: loud log, NO clone/dist fallback', async () => {
+    cliPresent = true;
+    detectedVariantId = 'amadeus';
+    const loader = makeRuleLoader({ configureThrows: true });
+    const cmd = new SetupCommand(loader, makeOutputChannel(), async () => undefined);
+
+    await cmd.execute();
+
+    expect(calls).toContain('configureWorkspaceForVariant');
+    expect(calls).not.toContain('installViaRepoInstaller');
+    expect(calls).not.toContain('cloneAidlcRepo');
+    expect(calls).not.toContain('installFramework');
+    expect(logLines.some((l) => l.includes('[AIDLC Amadeus]') && l.includes('config failed'))).toBe(true);
   });
 
   it('CLI ABSENT: a cancelled picker does nothing', async () => {
@@ -198,6 +252,6 @@ describe('SetupCommand — CLI-first branching', () => {
     await cmd.execute();
 
     expect(calls).not.toContain('installViaNativeInstaller');
-    expect(calls).not.toContain('installViaAmadeusCli');
+    expect(calls).not.toContain('launchAmadeusInstaller');
   });
 });

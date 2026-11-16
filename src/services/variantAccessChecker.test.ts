@@ -108,56 +108,108 @@ describe('VariantAccessChecker.check', () => {
     expect(called).toBe(false);
   });
 
-  it('returns accessible when git ls-remote succeeds for a gated variant', async () => {
+  // --- Amadeus (CLI model): the Artifactory installer URL must be reachable ---
+
+  it('Amadeus: probes the installer URL with curl (never git ls-remote or GitHub)', async () => {
+    const seen: string[] = [];
+    shellRun = async (cmd) => { seen.push(cmd); return { stdout: 'HTTP/2 200', stderr: '' }; };
+
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      seen.length = 0;
+      const result = await new VariantAccessChecker(makeChannel()).check(amadeus, platform);
+      expect(result).toEqual({ accessible: true });
+      expect(seen).toHaveLength(1);
+      const url = platform === 'win32'
+        ? amadeus.installScriptUrl!.windows
+        : amadeus.installScriptUrl!.unix;
+      expect(seen[0]).toContain('--max-time 10');
+      expect(seen[0]).toContain(`"${url}"`);
+      expect(seen[0].startsWith(platform === 'win32' ? 'curl.exe ' : 'curl ')).toBe(true);
+      expect(seen[0]).not.toContain('git ');
+      expect(seen[0]).not.toContain('github.com');
+    }
+  });
+
+  it('Amadeus: DNS / connect / timeout / HTTP 4xx all map to the friendly no-access reason', async () => {
+    for (const msg of [
+      'curl: (6) Could not resolve host: repository.rnd.amadeus.net',
+      'curl: (7) Failed to connect',
+      'curl: (28) Connection timed out after 10001 milliseconds',
+      'curl: (22) The requested URL returned error: 403',
+      'curl: (22) The requested URL returned error: 401',
+    ]) {
+      shellRun = async () => { throw new Error(msg); };
+      const result = await new VariantAccessChecker(makeChannel()).check(amadeus, 'darwin');
+      expect(result.accessible).toBe(false);
+      expect(result.reason).toContain("don't have access");
+      expect(result.reason).toContain(amadeus.installScriptUrl!.unix);
+      // Must NOT leak the raw curl output
+      expect(result.reason).not.toContain('curl:');
+    }
+  });
+
+  it('Amadeus: a missing curl skips the pre-check instead of reporting no access', async () => {
+    shellRun = async () => {
+      throw new Error("'curl.exe' is not recognized as an internal or external command");
+    };
+    const result = await new VariantAccessChecker(makeChannel()).check(amadeus, 'win32');
+    expect(result.accessible).toBe(true);
+    expect(result.reason).toBe(GIT_UNAVAILABLE_SKIP);
+  });
+
+  // --- Custom git-clone-copy fork keeps the git ls-remote behavior ---
+
+  const custom: AidlcVariant = { ...amadeus, id: 'custom', installMethod: 'git-clone-copy' };
+
+  it('custom: returns accessible when git ls-remote succeeds', async () => {
     shellRun = async (cmd) => {
       expect(cmd).toContain('git ls-remote');
       return { stdout: 'abc123\tHEAD\n', stderr: '' };
     };
 
-    const result = await new VariantAccessChecker(makeChannel()).check(amadeus);
+    const result = await new VariantAccessChecker(makeChannel()).check(custom);
     expect(result).toEqual({ accessible: true });
   });
 
-  it('returns a friendly auth reason when ls-remote fails with auth error', async () => {
+  it('custom: returns a friendly auth reason when ls-remote fails with auth error', async () => {
     shellRun = async () => { throw new Error('fatal: Authentication failed'); };
 
-    const result = await new VariantAccessChecker(makeChannel()).check(amadeus);
+    const result = await new VariantAccessChecker(makeChannel()).check(custom);
     expect(result.accessible).toBe(false);
     expect(result.reason).toContain("don't have access");
   });
 
-  it('returns a clean generic reason for an unclassified failure', async () => {
+  it('custom: returns a clean generic reason for an unclassified failure', async () => {
     shellRun = async () => { throw new Error('connection reset'); };
 
-    const result = await new VariantAccessChecker(makeChannel()).check(amadeus);
+    const result = await new VariantAccessChecker(makeChannel()).check(custom);
     expect(result.accessible).toBe(false);
     expect(result.reason).toContain("don't have access");
     // Must NOT leak the raw git output
     expect(result.reason).not.toContain('connection reset');
   });
 
-  it('skips the pre-check (accessible) when git is not installed', async () => {
+  it('custom: skips the pre-check (accessible) when git is not installed', async () => {
     shellRun = async () => { throw new Error('spawn git ENOENT'); };
 
-    const result = await new VariantAccessChecker(makeChannel()).check(amadeus);
+    const result = await new VariantAccessChecker(makeChannel()).check(custom);
     // Missing git must NOT be reported as "no access" — setup proceeds and the
     // install-time RepoAccessError remains the authoritative backstop.
     expect(result.accessible).toBe(true);
     expect(result.reason).toBe(GIT_UNAVAILABLE_SKIP);
   });
 
-  it('skips the pre-check on the Windows "not recognized" git message', async () => {
+  it('custom: skips the pre-check on the Windows "not recognized" git message', async () => {
     shellRun = async () => {
       throw new Error("'git' is not recognized as an internal or external command");
     };
 
-    const result = await new VariantAccessChecker(makeChannel()).check(amadeus);
+    const result = await new VariantAccessChecker(makeChannel()).check(custom);
     expect(result.accessible).toBe(true);
     expect(result.reason).toBe(GIT_UNAVAILABLE_SKIP);
   });
 
-  it('checks a custom (git-clone-copy) variant too', async () => {
-    const custom: AidlcVariant = { ...amadeus, id: 'custom', installMethod: 'git-clone-copy' };
+  it('custom: a not-found repo is reported as inaccessible', async () => {
     shellRun = async () => { throw new Error('Repository not found'); };
 
     const result = await new VariantAccessChecker(makeChannel()).check(custom);

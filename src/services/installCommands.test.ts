@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   aidlcBinaryCandidates,
-  buildAmadeusMachineSetupCommand,
+  amadeusInstallNextSteps,
+  amadeusManualInstallHint,
+  buildAccessProbeCommand,
+  buildAmadeusInstallerTerminal,
   buildNativeInstallCommand,
   buildRepoInstallerCommand,
+  doctorReportsInteractiveOnlyPath,
+  reportsConfigConflict,
 } from './installCommands';
 
 describe('buildNativeInstallCommand', () => {
@@ -73,51 +78,90 @@ describe('aidlcBinaryCandidates', () => {
   });
 });
 
-describe('buildAmadeusMachineSetupCommand', () => {
-  // The Amadeus 2.10+ machine setup installs the CLI only (no -Target/-Harness
-  // legacy flags); the project is configured afterwards with `aidlc config`.
-  const winScript =
-    'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli/install-aidlc.ps1';
-  const shScript =
-    'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/cli/install-aidlc.sh';
+describe('buildAmadeusInstallerTerminal (README section 1)', () => {
+  const urls = {
+    unix: 'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.sh',
+    windows:
+      'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.ps1',
+  };
 
-  // --- Remote URL (the common case): -File must NOT receive a URL ---
-
-  it('fetches the remote script via irm|iex on Windows — NEVER -File "<url>"', () => {
-    const cmd = buildAmadeusMachineSetupCommand('win32', winScript);
-    // Structural bug fix: a URL may not be passed to -File ("Illegal
-    // characters in path"). It is fetched with irm and run as a scriptblock.
-    expect(cmd).toBe(
-      `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm '${winScript}'))) -SkipCredentials"`
-    );
-    expect(cmd).not.toContain(`-File "${winScript}"`);
-    expect(cmd).not.toContain('-Target');
-    expect(cmd).not.toContain('-Harness');
-  });
-
-  it('pipes the remote script into sh for a URL on Unix (never sh <url>)', () => {
-    expect(buildAmadeusMachineSetupCommand('linux', shScript)).toBe(
-      `curl -fsSL ${shScript} | sh -s -- --skip-credentials`
-    );
-    expect(buildAmadeusMachineSetupCommand('darwin', shScript)).toBe(
-      `curl -fsSL ${shScript} | sh -s -- --skip-credentials`
+  it('Windows: PowerShell, download-then-run, exactly the README one-liner', () => {
+    const t = buildAmadeusInstallerTerminal('win32', urls);
+    expect(t.shellPath).toBe('powershell.exe');
+    expect(t.command).toBe(
+      '$f = Join-Path $env:TEMP "install-aidlc.ps1"; ' +
+        `curl.exe -fsSL ${urls.windows} -o $f; ` +
+        'powershell -ExecutionPolicy Bypass -File $f; Remove-Item $f'
     );
   });
 
-  // --- Local path (SSO-clone fallback): -File / sh <path> is correct ---
-
-  it('runs a LOCAL ps1 path with -File on Windows', () => {
-    const local = 'C:\\tmp\\clone\\scripts\\install-aidlc.ps1';
-    expect(buildAmadeusMachineSetupCommand('win32', local)).toBe(
-      `powershell -NoProfile -ExecutionPolicy Bypass -File "${local}" -SkipCredentials`
-    );
+  it('macOS and Linux: bash with process substitution, exactly the README command', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const t = buildAmadeusInstallerTerminal(platform, urls);
+      expect(t.shellPath).toBe('/bin/bash');
+      expect(t.command).toBe(`bash <(curl -fsSL ${urls.unix})`);
+    }
   });
 
-  it('runs a LOCAL sh path with sh on Unix', () => {
-    const local = '/tmp/clone/scripts/install-aidlc.sh';
-    expect(buildAmadeusMachineSetupCommand('linux', local)).toBe(
-      `sh "${local}" --skip-credentials`
+  it('never uses irm|iex, -File <url>, curl | sh, skip flags or preview', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const { command } = buildAmadeusInstallerTerminal(platform, urls);
+      expect(command).not.toMatch(/\birm\b|\biex\b|\| sh|-File https?:|skip-|-Skip|preview|-Preview/i);
+    }
+  });
+});
+
+describe('amadeus install messaging', () => {
+  const urls = { unix: 'https://x/install-aidlc.sh', windows: 'https://x/install-aidlc.ps1' };
+
+  it('manual hint embeds the exact command for the OS', () => {
+    expect(amadeusManualInstallHint('win32', urls)).toContain(
+      buildAmadeusInstallerTerminal('win32', urls).command
     );
+    expect(amadeusManualInstallHint('win32', urls)).toContain('not as administrator');
+    expect(amadeusManualInstallHint('darwin', urls)).toContain('bash <(curl -fsSL https://x/install-aidlc.sh)');
+  });
+
+  it('next steps differ per OS and mention eve credentials + re-running Setup', () => {
+    const win = amadeusInstallNextSteps('win32');
+    expect(win).toContain('quit and reopen');
+    expect(win).toContain('not as administrator');
+    const mac = amadeusInstallNextSteps('darwin');
+    expect(mac).toContain('open a new terminal');
+    expect(amadeusInstallNextSteps('linux')).toContain('open a new terminal');
+    for (const s of [win, mac]) {
+      expect(s).toContain('Setup again');
+      expect(s).toContain('eve credentials amaiisdom <your-username>');
+    }
+  });
+});
+
+describe('buildAccessProbeCommand', () => {
+  it('uses curl.exe on Windows and curl elsewhere, with a short timeout', () => {
+    expect(buildAccessProbeCommand('win32', 'https://h/p')).toBe(
+      'curl.exe -fsS -I --max-time 10 "https://h/p"'
+    );
+    expect(buildAccessProbeCommand('darwin', 'https://h/p')).toBe(
+      'curl -fsS -I --max-time 10 "https://h/p"'
+    );
+    expect(buildAccessProbeCommand('linux', 'https://h/p')).toBe(
+      'curl -fsS -I --max-time 10 "https://h/p"'
+    );
+  });
+});
+
+describe('doctor / config output classifiers', () => {
+  it('detects the interactive-only PATH report', () => {
+    expect(doctorReportsInteractiveOnlyPath('⚠ aidlc is interactive-only (not on the hook PATH)')).toBe(true);
+    expect(doctorReportsInteractiveOnlyPath('aidlc resolves only through the interactive PATH')).toBe(true);
+    expect(doctorReportsInteractiveOnlyPath('✓ all good')).toBe(false);
+    expect(doctorReportsInteractiveOnlyPath(undefined)).toBe(false);
+  });
+
+  it('detects conflict reports', () => {
+    expect(reportsConfigConflict('2 conflicts: .kiro/x edited locally')).toBe(true);
+    expect(reportsConfigConflict('nothing to change')).toBe(false);
+    expect(reportsConfigConflict(undefined)).toBe(false);
   });
 });
 

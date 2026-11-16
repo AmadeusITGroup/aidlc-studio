@@ -4,6 +4,7 @@ import { BunInstaller } from '../services/bunInstaller';
 import { VariantAccessChecker, isAccessGated } from '../services/variantAccessChecker';
 import { AidlcCli } from '../services/aidlcCli';
 import { AIDLC_VARIANTS, AidlcVariant, getVariant } from '../services/variants';
+import { amadeusInstallNextSteps, amadeusManualInstallHint } from '../services/installCommands';
 import { detectCliPresence } from '../services/cliPresence';
 
 export class SetupCommand {
@@ -52,22 +53,28 @@ export class SetupCommand {
       // and we must bootstrap one.
       const presence = await detectCliPresence();
 
-      if (presence.present) {
-        await this.executeWithPresentCli(workspaceFolder.uri, presence.variantId);
-      } else {
-        await this.executeWithBootstrap(workspaceFolder.uri);
+      // false = setup did not configure this project (Amadeus installer
+      // launched in a terminal, or an Amadeus failure already reported).
+      const configuredNow = presence.present
+        ? await this.executeWithPresentCli(workspaceFolder.uri, presence.variantId)
+        : await this.executeWithBootstrap(workspaceFolder.uri);
+
+      if (!configuredNow) {
+        await this.onStatusChange();
+        return;
       }
 
       this.outputChannel.appendLine('');
       this.outputChannel.appendLine('=== Setup Complete ===');
       this.outputChannel.appendLine('');
       this.outputChannel.appendLine('Next steps:');
+      this.outputChannel.appendLine('  0. Start a NEW chat session so the agent picks up the new files');
       this.outputChannel.appendLine('  1. In Kiro chat, type: /aidlc --doctor   (verify setup)');
       this.outputChannel.appendLine('  2. Then type: /aidlc <description>       (start a workflow)');
       this.outputChannel.appendLine('');
 
       vscode.window.showInformationMessage(
-        'AIDLC installed. Type "/aidlc --doctor" in Kiro chat to verify, then "/aidlc [description]" to start.',
+        'AIDLC installed. Start a new chat session, then type "/aidlc --doctor" in Kiro chat to verify, then "/aidlc [description]" to start.',
         'Copy /aidlc --doctor'
       ).then((action) => {
         if (action === 'Copy /aidlc --doctor') {
@@ -108,14 +115,15 @@ export class SetupCommand {
    * workspace with the installed CLI (`aidlc config`), then run doctor. NO
    * repo clone, NO dist copy, NO installer run — the CLI already exists.
    *
-   * On failure, FALL BACK to the full install path (installMethod switch),
-   * which clones/copies as a last resort. The detected variant drives both the
-   * CLI config and the fallback method.
+   * On failure, AWS FALLS BACK to the full install path (installMethod switch).
+   * Amadeus has NO clone/dist fallback (2.10+ ships no dist/): the failure is
+   * logged loudly and reported with the official installer command.
+   * Returns false when the project was NOT configured (Amadeus failure).
    */
   private async executeWithPresentCli(
     workspaceUri: vscode.Uri,
     detectedVariantId: 'aws' | 'amadeus' | null
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Detect-don't-ask: resolve the variant from what's installed. When
     // detection couldn't classify, fall back to the default (AWS) variant —
     // the config step is variant-agnostic beyond harness resolution.
@@ -125,6 +133,7 @@ export class SetupCommand {
       `Detected installed aidlc CLI: ${variant.label}. Configuring this workspace (no reinstall).`
     );
 
+    const state = { configured: true };
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
@@ -143,6 +152,15 @@ export class SetupCommand {
           await this.runDoctor(workspaceUri);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+          if (variant.installMethod === 'amadeus-cli') {
+            state.configured = false;
+            this.reportAmadeusFailure(
+              variant,
+              'Configuring this project with the installed `aidlc` CLI (`aidlc config`)',
+              msg
+            );
+            return;
+          }
           this.outputChannel.appendLine(
             `[AIDLC fallback] CLI-first setup was attempted (a present \`aidlc\` CLI was detected ` +
             `and \`aidlc config\` was run), but it FAILED: ${msg}. ` +
@@ -152,19 +170,23 @@ export class SetupCommand {
         }
       }
     );
+    return state.configured;
   }
 
   /**
-   * CLI ABSENT path: show the AWS/Amadeus picker, bootstrap that variant's CLI
-   * (AWS public one-liner / Amadeus machine installer), ensure it's on PATH,
-   * then `aidlc config` + doctor. On bootstrap failure, FALL BACK to the
-   * repo-clone/dist-copy path.
+   * CLI ABSENT path: show the AWS/Amadeus picker.
+   *  - AWS: bootstrap via the public one-liner, then `aidlc config` + doctor;
+   *    on bootstrap failure, FALL BACK to the repo-clone/dist-copy path.
+   *  - Amadeus: access pre-check, then launch the OFFICIAL machine installer
+   *    in an interactive terminal (README section 1) and stop. The installer
+   *    provides Git and Bun, so Studio installs nothing first. The user re-runs
+   *    Setup afterwards to configure the project. Returns false in that case.
    *
    * Preserves the session ordering: access pre-check BEFORE prerequisites, and
-   * a graceful skip when git is absent (VariantAccessChecker returns accessible
-   * with the GIT_UNAVAILABLE_SKIP sentinel).
+   * a graceful skip when the probe tool is absent (VariantAccessChecker returns
+   * accessible with the GIT_UNAVAILABLE_SKIP sentinel).
    */
-  private async executeWithBootstrap(workspaceUri: vscode.Uri): Promise<void> {
+  private async executeWithBootstrap(workspaceUri: vscode.Uri): Promise<boolean> {
     const picked = await vscode.window.showQuickPick(
       AIDLC_VARIANTS.map((v) => ({
         label: v.label,
@@ -178,13 +200,14 @@ export class SetupCommand {
     );
 
     if (!picked) {
-      return; // User cancelled
+      return true; // User cancelled (unchanged behavior: falls through to the caller)
     }
 
     const variant = getVariant(picked.id);
     this.ruleLoader.setVariant(variant);
     this.outputChannel.appendLine(`Selected variant: ${variant.label} (${variant.repoUrl})`);
 
+    const state = { installerLaunched: false, amadeusFailed: false };
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
@@ -206,6 +229,24 @@ export class SetupCommand {
             );
           }
           if (token.isCancellationRequested) { return; }
+        }
+
+        // Amadeus: the official installer provides Git and Bun, so do NOT
+        // install bun first. Launch it interactively and stop; do not wait.
+        if (variant.installMethod === 'amadeus-cli') {
+          progress.report({ message: 'Step 2/3: Launching the official installer...', increment: 60 });
+          try {
+            this.ruleLoader.launchAmadeusInstaller();
+            state.installerLaunched = true;
+          } catch (e) {
+            state.amadeusFailed = true;
+            this.reportAmadeusFailure(
+              variant,
+              'Launching the official Amadeus installer terminal',
+              e instanceof Error ? e.message : String(e)
+            );
+          }
+          return;
         }
 
         // Step 2: Prerequisite — ensure bun (the only setup prerequisite).
@@ -245,21 +286,66 @@ export class SetupCommand {
         }
       }
     );
+
+    if (state.installerLaunched) {
+      this.outputChannel.appendLine('');
+      this.outputChannel.appendLine(
+        'Amadeus installer launched. Finish it in the "AIDLC Installer" terminal, then run Setup again.'
+      );
+      vscode.window.showInformationMessage(
+        amadeusInstallNextSteps(process.platform),
+        'Run Setup Again'
+      ).then((action) => {
+        if (action === 'Run Setup Again') {
+          vscode.commands.executeCommand('amadeus-aidlc.setup');
+        }
+      });
+      return false;
+    }
+    return !state.amadeusFailed;
   }
 
   /**
-   * Bootstrap the `aidlc` CLI for the chosen variant via its official method
-   * (CLI-first): AWS native one-liner, or the Amadeus machine installer. Both
-   * then run `aidlc config`. A custom 'git-clone-copy' fork has no CLI to
-   * bootstrap, so it uses the clone-copy path directly.
+   * Amadeus has no clone/dist fallback (2.10+ ships no dist/; the legacy 2.5
+   * installer is a different mode Studio does not drive). Log loudly what was
+   * attempted and the underlying error, and show the exact official command
+   * for this OS plus a button to open it in the installer terminal.
+   */
+  private reportAmadeusFailure(variant: AidlcVariant, attempted: string, error: string): void {
+    const hint = variant.installScriptUrl
+      ? amadeusManualInstallHint(process.platform, variant.installScriptUrl)
+      : '';
+    this.outputChannel.appendLine(
+      `[AIDLC Amadeus] ${attempted} FAILED: ${error}. ` +
+      'There is no clone/dist-copy fallback for Amadeus AI-DLC 2.10+. ' + hint
+    );
+    vscode.window.showErrorMessage(
+      `Amadeus AI-DLC setup failed: ${error} ${hint}`,
+      'Open Installer Terminal'
+    ).then((action) => {
+      if (action === 'Open Installer Terminal') {
+        try {
+          this.ruleLoader.launchAmadeusInstaller();
+        } catch (e) {
+          this.outputChannel.appendLine(
+            `[AIDLC Amadeus] Could not open the installer terminal: ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
+      }
+    });
+  }
+
+  /**
+   * Bootstrap the `aidlc` CLI for AWS via its official native one-liner, which
+   * is followed by `aidlc config`. (Amadeus never reaches here: its installer
+   * is launched in a terminal by executeWithBootstrap.) A custom
+   * 'git-clone-copy' fork has no CLI to bootstrap, so it uses the clone-copy
+   * path directly.
    */
   private async bootstrapCli(workspaceUri: vscode.Uri, variant: AidlcVariant): Promise<void> {
     switch (variant.installMethod) {
       case 'native-installer':
         await this.ruleLoader.installViaNativeInstaller(workspaceUri);
-        break;
-      case 'amadeus-cli':
-        await this.ruleLoader.installViaAmadeusCli(workspaceUri);
         break;
       default:
         // 'repo-installer' (legacy) and 'git-clone-copy' (custom fork) have no
@@ -270,16 +356,18 @@ export class SetupCommand {
   }
 
   /**
-   * LAYERED FALLBACK (user-approved): the existing repo-clone +
-   * official-installer-script + dist-copy path. Kept working so a failed
-   * CLI-first attempt, a legacy 'repo-installer' variant, or an explicit custom
-   * 'git-clone-copy' fork all still install. Not deleted.
+   * LAYERED FALLBACK for AWS and the explicit custom 'git-clone-copy' fork: the
+   * repo-clone + official-installer-script + dist-copy path. NEVER used for the
+   * Amadeus 2.10+ variant ('amadeus-cli'), which has no dist/ to copy.
    */
   private async installViaFallback(
     workspaceUri: vscode.Uri,
     variant: AidlcVariant,
     progress?: vscode.Progress<{ message?: string; increment?: number }>
   ): Promise<void> {
+    if (variant.installMethod === 'amadeus-cli') {
+      throw new Error('No clone/dist-copy fallback exists for Amadeus AI-DLC 2.10+.');
+    }
     this.outputChannel.appendLine(
       `[AIDLC fallback] Entering the LEGACY repo-clone/dist-copy install path for ` +
       `${variant.label} (installMethod=${variant.installMethod}). The CLI-first path ` +
@@ -290,7 +378,6 @@ export class SetupCommand {
         progress?.report({ message: 'Fallback: running official installer...' });
         await this.ruleLoader.installViaNativeInstaller(workspaceUri);
         break;
-      case 'amadeus-cli':
       case 'repo-installer':
         progress?.report({ message: 'Fallback: cloning and running the official installer...' });
         await this.ruleLoader.installViaRepoInstaller(workspaceUri);
@@ -333,7 +420,15 @@ export class SetupCommand {
     this.outputChannel.appendLine('');
     this.outputChannel.appendLine('--- AI-DLC doctor ---');
 
-    const result = await cli.doctor(mode);
+    let result = await cli.doctor(mode);
+
+    // README step 2: when doctor says aidlc resolves only through the
+    // interactive PATH, `aidlc config runtime` is the official fix (the rc-file
+    // writer is only its fallback). Re-run doctor to confirm.
+    if (await this.ruleLoader.fixHookShellPath(workspaceUri, result.raw)) {
+      this.outputChannel.appendLine('--- AI-DLC doctor (after PATH fix) ---');
+      result = await cli.doctor(mode);
+    }
 
     if (result.passed) {
       const passCount = result.checks.filter((c) => c.passed).length;

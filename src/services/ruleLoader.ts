@@ -4,9 +4,12 @@ import { Shell } from './shell';
 import { AidlcVariant, getDefaultVariant, getVariant, resolveHarness } from './variants';
 import {
   aidlcBinaryCandidates,
-  buildAmadeusMachineSetupCommand,
+  amadeusInstallNextSteps,
+  buildAmadeusInstallerTerminal,
   buildNativeInstallCommand,
   buildRepoInstallerCommand,
+  doctorReportsInteractiveOnlyPath,
+  reportsConfigConflict,
 } from './installCommands';
 import { readAidlcInstall } from './aidlcInstallReader';
 import { classifyVariant } from './variantDetector';
@@ -188,71 +191,44 @@ export class RuleLoader {
     }
     this.outputChannel?.appendLine(`Configuring harness (aidlc config --harness ${harness})...`);
     await this.runAidlcConfig(workspaceUri, harness);
-
-    // Make the freshly-installed aidlc CLI reachable from Kiro's
-    // non-interactive hook shells (Mac/Unix). No-op on Windows.
-    this.ensureAidlcOnPath();
+    // PATH for hook shells is handled after doctor (see fixHookShellPath):
+    // `aidlc config runtime` first, the rc-file writer only as a fallback.
   }
 
   /**
-   * Install the Amadeus variant using the 2.10+ CLI-driven model, which mirrors
-   * the AWS native path: run the machine installer to put the `aidlc` CLI on
-   * the machine (no project touched), then `aidlc config --harness <harness>`
-   * to configure the project. This replaces the old clone-and-copy-dist flow,
-   * which assumed the retired 2.5 `dist/<harness>/` layout the 2.10+ repo no
-   * longer ships.
+   * Launch the OFFICIAL Amadeus AI-DLC 2.10 machine installer (README section
+   * 1) in an interactive terminal: PowerShell on Windows (not elevated), bash
+   * on macOS/Linux. It installs Git, Bun, the `aidlc` CLI, Python and EVE and
+   * may prompt for credentials, so this does NOT wait for completion and does
+   * not use child_process. The project is configured afterwards by re-running
+   * Setup once the CLI exists.
    *
-   * The ONLY uncertain, SSO-gated value is the machine-installer invocation,
-   * isolated behind buildAmadeusMachineSetupCommand (install-aidlc.ps1
-   * -SkipCredentials). The project-config step reuses runAidlcConfig verbatim.
-   *
-   * ASSUMPTION pending confirmation on a real Amadeus 2.10+ machine: the
-   * machine installer is remote-pipeable from variant.installScriptUrl (as AWS
-   * is). If it turns out it must be obtained via an SSO clone first, change the
-   * command source here — fetch/clone, then point the builder at the local
-   * script path — while keeping runAidlcConfig below unchanged.
+   * Returns the terminal so callers/tests can inspect it.
    */
-  async installViaAmadeusCli(workspaceUri: vscode.Uri): Promise<void> {
+  launchAmadeusInstaller(): vscode.Terminal {
     const variant = this.activeVariant;
     if (!variant.installScriptUrl) {
       throw new Error(`Variant ${variant.label} has no install script configured.`);
     }
-
-    const scriptPathOrUrl = process.platform === 'win32'
-      ? variant.installScriptUrl.windows
-      : variant.installScriptUrl.unix;
-
-    // The single, correctable Amadeus machine-setup command (see
-    // buildAmadeusMachineSetupCommand for the isolated assumptions).
-    const installCmd = buildAmadeusMachineSetupCommand(process.platform, scriptPathOrUrl);
-    this.outputChannel?.appendLine(`Running Amadeus machine installer: ${installCmd}`);
-    if (this.outputChannel) {
-      await Shell.runStreaming(installCmd, this.outputChannel, {
-        timeout: 180000,
-        cwd: workspaceUri.fsPath,
-      });
-    } else {
-      await Shell.run(installCmd, { timeout: 180000, cwd: workspaceUri.fsPath });
-    }
-
-    // Configure the single harness that matches the host IDE, clamped to what
-    // this variant actually ships. Reuses runAidlcConfig verbatim (same as AWS).
-    const { harness, fellBack } = resolveHarness(variant);
-    if (fellBack) {
-      this.outputChannel?.appendLine(
-        `Note: ${variant.label} does not provide a harness for this IDE; installing "${harness}" instead.`
-      );
-    }
-    this.outputChannel?.appendLine(`Configuring harness (aidlc config --harness ${harness})...`);
-    await this.runAidlcConfig(workspaceUri, harness);
-
-    // Make the freshly-installed aidlc CLI reachable from Kiro's
-    // non-interactive hook shells (Mac/Unix). No-op on Windows.
-    this.ensureAidlcOnPath();
+    const { shellPath, command } = buildAmadeusInstallerTerminal(
+      process.platform,
+      variant.installScriptUrl
+    );
+    this.outputChannel?.appendLine(`Launching the official Amadeus installer in a terminal (${shellPath}):`);
+    this.outputChannel?.appendLine(`  ${command}`);
+    const terminal = vscode.window.createTerminal({ name: 'AIDLC Installer', shellPath });
+    terminal.show();
+    terminal.sendText(command);
+    this.outputChannel?.appendLine(amadeusInstallNextSteps(process.platform));
+    return terminal;
   }
 
   /**
-   * Ensure the freshly-installed `aidlc` CLI is on PATH for Kiro's
+   * FALLBACK ONLY. The official fix for an interactive-only `aidlc` PATH is
+   * `aidlc config runtime` (see fixHookShellPath); this hand-rolled rc-file
+   * writer runs only when that command fails.
+   *
+   * Ensure the `aidlc` CLI is on PATH for Kiro's
    * NON-INTERACTIVE hook shells. Mirrors BunInstaller.ensureBunOnPath: on
    * Mac/Linux the CLI installs to a user bin dir (e.g. ~/.local/bin or
    * ~/.aidlc/bin) that only the INTERACTIVE login PATH carries, so Kiro's
@@ -329,22 +305,53 @@ export class RuleLoader {
       `Configuring workspace with the installed aidlc CLI (aidlc config --harness ${harness})...`
     );
     await this.runAidlcConfig(workspaceUri, harness);
-    // Keep the freshly-configured CLI reachable from Kiro's non-interactive
-    // hook shells (Mac/Unix). No-op on Windows.
-    this.ensureAidlcOnPath();
+    // PATH for hook shells is handled after doctor (see fixHookShellPath).
   }
 
   /**
-   * Run `aidlc config --harness <harness>`. The freshly-installed binary is
-   * usually not yet on this process's PATH, so resolve it by its known install
-   * location FIRST (absolute path), falling back to a bare-PATH `aidlc` only as
-   * a secondary attempt. If nothing works, surface a clear manual-step error.
+   * Official fix for "aidlc resolves only through the interactive PATH":
+   * `aidlc config runtime` (README step 2), so the IDE's hook shells find it
+   * too. Call with the raw `aidlc doctor` output after config.
+   *
+   * - Doctor does not report the problem → nothing to do, returns false.
+   * - Otherwise run `aidlc config runtime` and return true (the caller should
+   *   re-run doctor). If that command fails, fall back to the rc-file writer
+   *   (Unix only; a no-op on Windows).
+   *
+   * Applies to both AWS and Amadeus. Logged loudly because it changes the
+   * machine's runtime configuration.
    */
-  private async runAidlcConfig(workspaceUri: vscode.Uri, harness: string): Promise<void> {
+  async fixHookShellPath(workspaceUri: vscode.Uri, doctorOutput: string | undefined): Promise<boolean> {
+    if (!doctorReportsInteractiveOnlyPath(doctorOutput)) {
+      return false;
+    }
+    this.outputChannel?.appendLine(
+      '[AIDLC PATH] `aidlc doctor` reports that aidlc resolves only through the interactive PATH. ' +
+      'Running the official fix: `aidlc config runtime`.'
+    );
+    try {
+      await this.runAidlcCommand(workspaceUri, 'config runtime');
+      this.outputChannel?.appendLine('[AIDLC PATH] `aidlc config runtime` succeeded. Re-running doctor.');
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.outputChannel?.appendLine(
+        `[AIDLC PATH] \`aidlc config runtime\` FAILED: ${msg}. ` +
+        'Falling back to writing the PATH export into the shell rc files (Unix only).'
+      );
+      return this.ensureAidlcOnPath();
+    }
+  }
+
+  /**
+   * Resolve the `aidlc` binary expressions to try: each known absolute install
+   * path that exists (quoted) first, then bare `aidlc` from PATH. The
+   * freshly-installed binary is usually not yet on this process's PATH.
+   */
+  private async aidlcBinExpressions(): Promise<string[]> {
     const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
     const candidates = aidlcBinaryCandidates(process.platform, home);
 
-    // Try each known absolute path first, then fall back to bare PATH.
     const binsToTry: string[] = [];
     for (const bin of candidates) {
       try {
@@ -355,40 +362,107 @@ export class RuleLoader {
       }
     }
     binsToTry.push('aidlc'); // bare PATH attempt last
+    return binsToTry;
+  }
 
-    for (const binExpr of binsToTry) {
+  /**
+   * Run `aidlc <args>` in the workspace, trying each resolved binary in turn.
+   * Streams to the output channel and resolves with the combined output.
+   * A conflict report is rethrown immediately (every candidate would hit the
+   * same one); otherwise the last error is thrown once all candidates fail.
+   */
+  private async runAidlcCommand(workspaceUri: vscode.Uri, args: string, timeout = 60000): Promise<string> {
+    let lastError = new Error(`aidlc ${args} could not run.`);
+    for (const binExpr of await this.aidlcBinExpressions()) {
+      const cmd = `${binExpr} ${args}`;
       try {
-        if (this.outputChannel) {
-          await Shell.runStreaming(`${binExpr} config --harness ${harness} --yes`, this.outputChannel, {
-            timeout: 60000,
-            cwd: workspaceUri.fsPath,
-          });
-        } else {
-          await Shell.run(`${binExpr} config --harness ${harness} --yes`, {
-            timeout: 60000,
-            cwd: workspaceUri.fsPath,
-          });
-        }
-        this.outputChannel?.appendLine(`Configured harness using ${binExpr}`);
-        return;
+        const res = this.outputChannel
+          ? await Shell.runStreaming(cmd, this.outputChannel, { timeout, cwd: workspaceUri.fsPath })
+          : await Shell.run(cmd, { timeout, cwd: workspaceUri.fsPath });
+        return `${res.stdout}\n${res.stderr}`.trim();
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        this.outputChannel?.appendLine(`aidlc config failed with ${binExpr}: ${msg}`);
-
-        // Exit code 4 = config conflict (e.g. existing AGENTS.md the installer
-        // can't categorise). Surface a clear, actionable message instead of
-        // silently trying the next candidate — all candidates will hit the same
-        // conflict.
-        if (msg.includes('config conflict') || msg.includes('legacy root integration')) {
-          throw new Error(
-            'aidlc config detected a conflict with an existing AGENTS.md file. ' +
-            'This happens when the workspace already has an AGENTS.md that is not managed by AIDLC. ' +
-            'To fix: open a terminal in your project and run:\n' +
-            '  aidlc config --dry-run --verbose   (to preview)\n' +
-            `  aidlc config --harness ${harness} --yes   (to apply)\n` +
-            'You may need to move or merge your existing AGENTS.md first.'
-          );
+        lastError = e instanceof Error ? e : new Error(String(e));
+        this.outputChannel?.appendLine(`aidlc ${args} failed with ${binExpr}: ${lastError.message}`);
+        if (reportsConfigConflict(lastError.message)) {
+          throw lastError;
         }
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * UPDATE WORKSPACE, step 1 (README "Updating"): `aidlc config --dry-run`
+   * shows what would change without touching anything. Returns the report and
+   * whether it mentions conflicts (locally edited files, which `aidlc config`
+   * reports instead of overwriting).
+   */
+  async previewWorkspaceUpdate(
+    workspaceUri: vscode.Uri
+  ): Promise<{ output: string; conflict: boolean }> {
+    this.outputChannel?.appendLine('Previewing workspace changes (aidlc config --dry-run)...');
+    try {
+      const output = await this.runAidlcCommand(workspaceUri, 'config --dry-run');
+      return { output, conflict: reportsConfigConflict(output) };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (reportsConfigConflict(msg)) {
+        return { output: msg, conflict: true };
+      }
+      throw new Error(`aidlc config --dry-run failed: ${msg}`);
+    }
+  }
+
+  /**
+   * UPDATE WORKSPACE, step 2: `aidlc config --yes` (the project is already
+   * configured, so no --harness is needed). Workflow records under aidlc/ are
+   * kept and locally edited files are reported as conflicts, not overwritten.
+   * If the CLI rejects the bare form, fall back to the resolved harness.
+   */
+  async applyWorkspaceUpdate(workspaceUri: vscode.Uri, variant: AidlcVariant): Promise<void> {
+    this.outputChannel?.appendLine('Applying workspace update (aidlc config --yes)...');
+    try {
+      await this.runAidlcCommand(workspaceUri, 'config --yes');
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (reportsConfigConflict(msg)) {
+        throw new Error(
+          `aidlc config reported conflicts: ${msg}\n` +
+          'Files you edited locally were left untouched. Review them, then run `aidlc config` again.'
+        );
+      }
+      const { harness } = resolveHarness(variant);
+      this.outputChannel?.appendLine(
+        `aidlc config --yes was rejected (${msg}). Retrying with --harness ${harness}...`
+      );
+      await this.runAidlcConfig(workspaceUri, harness);
+    }
+  }
+
+  /**
+   * Run `aidlc config --harness <harness> --yes`, resolving the binary by
+   * absolute path first. If nothing works, surface a clear manual-step error.
+   */
+  private async runAidlcConfig(workspaceUri: vscode.Uri, harness: string): Promise<void> {
+    try {
+      await this.runAidlcCommand(workspaceUri, `config --harness ${harness} --yes`);
+      this.outputChannel?.appendLine(`Configured harness ${harness}.`);
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+
+      // Exit code 4 = config conflict (e.g. existing AGENTS.md the installer
+      // can't categorise). Surface a clear, actionable message.
+      if (msg.includes('config conflict') || msg.includes('legacy root integration')) {
+        throw new Error(
+          'aidlc config detected a conflict with an existing AGENTS.md file. ' +
+          'This happens when the workspace already has an AGENTS.md that is not managed by AIDLC. ' +
+          'To fix: open a terminal in your project and run:\n' +
+          '  aidlc config --dry-run --verbose   (to preview)\n' +
+          `  aidlc config --harness ${harness} --yes   (to apply)\n` +
+          'You may need to move or merge your existing AGENTS.md first.'
+        );
       }
     }
 

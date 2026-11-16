@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Shell } from './shell';
 import { AidlcVariant } from './variants';
+import { buildAccessProbeCommand } from './installCommands';
 
 export interface VariantAccessResult {
   accessible: boolean;
@@ -83,7 +84,9 @@ export function isAccessGated(variant: Pick<AidlcVariant, 'id' | 'installMethod'
  * deep inside the clone/installer.
  *
  * - AWS (public): always accessible — no network call.
- * - Amadeus / custom (private/SSO repo): a plain `git ls-remote <repoUrl>`
+ * - Amadeus (CLI model): the installer URL on the Amadeus Artifactory must be
+ *   reachable (short-timeout `curl -I`); see checkInstallerReachable.
+ * - Custom (private/SSO repo): a plain `git ls-remote <repoUrl>`
  *   with a short timeout. Exit 0 → accessible; auth/not-found failure → a
  *   friendly reason; anything else → a clean generic inaccessible. Requires
  *   git to be present (the caller ensures that first).
@@ -91,9 +94,19 @@ export function isAccessGated(variant: Pick<AidlcVariant, 'id' | 'installMethod'
 export class VariantAccessChecker {
   constructor(private readonly outputChannel?: vscode.OutputChannel) {}
 
-  async check(variant: AidlcVariant): Promise<VariantAccessResult> {
+  async check(
+    variant: AidlcVariant,
+    platform: NodeJS.Platform = process.platform
+  ): Promise<VariantAccessResult> {
     if (!isAccessGated(variant)) {
       return { accessible: true };
+    }
+
+    // Amadeus 2.10+ installs from the Amadeus Artifactory (network / SSO
+    // gated), NOT from the GitHub repo: "has access" == the installer URL is
+    // reachable from this network.
+    if (variant.installMethod === 'amadeus-cli') {
+      return this.checkInstallerReachable(variant, platform);
     }
 
     this.outputChannel?.appendLine(`Checking access to ${variant.label} (${variant.repoUrl})...`);
@@ -126,6 +139,44 @@ export class VariantAccessChecker {
         `You don't have access to "${variant.label}". This version is restricted — ` +
           `make sure you're on the required network and signed in, or choose the open-source version instead.`;
       return { accessible: false, reason };
+    }
+  }
+
+  /**
+   * Reachability probe for a URL-gated installer: a short-timeout `curl -I`.
+   * Any failure (DNS, connect, timeout, HTTP 4xx) means "no access". A missing
+   * curl cannot tell us anything, so it skips the pre-check like a missing git.
+   */
+  private async checkInstallerReachable(
+    variant: AidlcVariant,
+    platform: NodeJS.Platform
+  ): Promise<VariantAccessResult> {
+    const urls = variant.installScriptUrl;
+    const url = urls ? (platform === 'win32' ? urls.windows : urls.unix) : undefined;
+    if (!url) {
+      return { accessible: true };
+    }
+
+    this.outputChannel?.appendLine(`Checking access to ${variant.label} (${url})...`);
+    try {
+      await Shell.run(buildAccessProbeCommand(platform, url), { timeout: 15000 });
+      this.outputChannel?.appendLine(`Access OK: ${variant.label}`);
+      return { accessible: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isGitUnavailable(message)) {
+        this.outputChannel?.appendLine(
+          `Access check skipped for ${variant.label}: curl not available (${message})`
+        );
+        return { accessible: true, reason: GIT_UNAVAILABLE_SKIP };
+      }
+      this.outputChannel?.appendLine(`Access check failed for ${variant.label}: ${message}`);
+      return {
+        accessible: false,
+        reason:
+          `You don't have access to "${variant.label}". The installer (${url}) is not reachable ` +
+          `from this network — connect to the Amadeus network (VPN) and sign in, or choose the open-source version instead.`,
+      };
     }
   }
 }
