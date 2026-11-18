@@ -296,6 +296,35 @@ AIDLC Studio is a Kiro and VS code extension that makes the AI-Driven Developmen
 
 ---
 
+### F11: Overview & Pod Brain Health
+
+**Problem:** What needs the developer's attention is spread over several views, and the health of the space's knowledge (the AI-DLC DocumentKB) is only visible by running framework commands.
+
+**Solution:** An Overview sidebar view and a Pod Brain tab in the Analytics dashboard. Both are read-only.
+
+**Behavior:**
+- The Overview view sits after System and has three groups:
+  - **Needs attention**: stages awaiting approval, stages sent back for rework, knowledge problems, and a brownfield workspace with no code map. Hidden when there is nothing to report
+  - **AI-DLC lifecycle**: Progress, Phase, Now and Gates open for the active intent
+  - **AI pod**: Intents running, Gates open (space), Code maps and Knowledge
+- Knowledge is the share of extractable documents that are extracted, rounded down. Documents of an unsupported type have nothing to extract and are not counted
+- The Pod Brain tab lists each document of the catalog with its extraction state, the framework's remedy, scope (intent or space-wide), tags, summary state and index date, plus removed documents. A button runs the existing knowledge command
+- Studio reads only the catalog's `index.json`. It never reads the extracted text, the summaries or the original documents, and it does not follow symbolic links
+- An index the framework would refuse (unsupported `schema_version`, an invalid row) is reported as unreadable, never partially shown
+
+**User Stories:**
+- As a developer, I want to see open gates and knowledge problems in one place
+- As a tech lead, I want to know which documents the agents cannot read yet, and what to do about each
+
+**Acceptance Criteria:**
+- [ ] The Overview view follows the System view
+- [ ] Needs attention lists open gates, rework, knowledge problems and a missing code map
+- [ ] Each extraction state is shown with a text label and the framework's remedy
+- [ ] An invalid or unsupported `index.json` is reported, not partially read
+- [ ] No file is written and no extracted text is displayed
+
+---
+
 ## Non-Functional Requirements
 
 | Category | Requirement |

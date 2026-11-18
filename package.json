@@ -254,6 +254,11 @@
           "visibility": "visible"
         },
         {
+          "id": "amadeus-aidlc.overview",
+          "name": "Overview",
+          "type": "tree"
+        },
+        {
           "id": "amadeus-aidlc.workflowProgress",
           "name": "Workflow Progress",
           "type": "tree"

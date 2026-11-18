@@ -13,12 +13,15 @@ import { WorkflowProgressProvider } from './views/workflowProgressProvider';
 import { StagesProvider } from './views/stagesProvider';
 import { ArtifactsProvider } from './views/artifactsProvider';
 import { IntentsProvider } from './views/intentsProvider';
+import { OverviewProvider } from './views/overviewProvider';
 import { ApprovalCodeLensProvider } from './providers/approvalCodeLensProvider';
 import { StateManager } from './services/stateManager';
 import { RuleLoader } from './services/ruleLoader';
 import { BunInstaller } from './services/bunInstaller';
 import { GitInstaller } from './services/gitInstaller';
 import { UpdateChecker } from './services/updateChecker';
+import { OverviewCollector } from './services/overviewCollector';
+import { studioSpace } from './services/spaces';
 import { Intent } from './types';
 
 let stateManager: StateManager;
@@ -70,6 +73,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
   const stagesProvider = new StagesProvider(stateManager);
   const artifactsProvider = new ArtifactsProvider(stateManager);
   const intentsProvider = new IntentsProvider(stateManager);
+  const overviewProvider = new OverviewProvider(new OverviewCollector(stateManager));
 
   // Initialize CodeLens provider for approval
   const approvalCodeLensProvider = new ApprovalCodeLensProvider(stateManager);
@@ -83,6 +87,11 @@ function activateInternal(context: vscode.ExtensionContext): void {
   // Register tree views
   const systemView = vscode.window.createTreeView('amadeus-aidlc.system', {
     treeDataProvider: systemProvider,
+    showCollapseAll: false,
+  });
+
+  const overviewView = vscode.window.createTreeView('amadeus-aidlc.overview', {
+    treeDataProvider: overviewProvider,
     showCollapseAll: false,
   });
 
@@ -108,6 +117,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
 
   // Callback to refresh all views after state changes
   const refreshAll = () => {
+    overviewProvider.refresh();
     workflowProgressProvider.refresh();
     stagesProvider.refresh();
     artifactsProvider.refresh();
@@ -278,6 +288,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
 
     // Views & providers
     systemView,
+    overviewView,
     progressView,
     stagesView,
     artifactsView,
@@ -363,6 +374,24 @@ function activateInternal(context: vscode.ExtensionContext): void {
   intentsJsonWatcher.onDidChange(onStateChange);
   intentsJsonWatcher.onDidCreate(onStateChange);
   context.subscriptions.push(intentsJsonWatcher);
+
+  // Watch the DocumentKB catalog so the Overview tree follows `/aidlc knowledge`
+  // changes. It refreshes ONLY the Overview: like the state watchers above, it
+  // never reloads an open Analytics panel (that would drop the user's tab, intent
+  // detail and graph state). The Pod Brain tab is refreshed by the panel's own
+  // Refresh button and when it is reopened. The framework writes the index
+  // atomically, so create and delete matter as much as change.
+  const knowledgeWatcher = vscode.workspace.createFileSystemWatcher(
+    `**/aidlc/spaces/${studioSpace()}/knowledge/documentkb/index.json`
+  );
+  const onKnowledgeChange = () => {
+    outputChannel.appendLine('DocumentKB index changed — refreshing the Overview.');
+    overviewProvider.refresh();
+  };
+  knowledgeWatcher.onDidChange(onKnowledgeChange);
+  knowledgeWatcher.onDidCreate(onKnowledgeChange);
+  knowledgeWatcher.onDidDelete(onKnowledgeChange);
+  context.subscriptions.push(knowledgeWatcher);
 
   outputChannel.appendLine('AIDLC Studio activated.');
 
