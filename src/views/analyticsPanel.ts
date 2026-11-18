@@ -1,18 +1,27 @@
 import * as vscode from 'vscode';
 import { AnalyticsCollector, GlobalAnalytics, IntentAnalytics } from '../services/analyticsCollector';
 import { GraphDataCollector, GraphData } from '../services/graphDataCollector';
+import { LifecycleCollector } from '../services/lifecycleCollector';
+import type { LifecycleModel, LifecycleResult } from '../services/lifecycleModel';
+import { LIFECYCLE_CSS, lifecycleActionFor, renderLifecycleTab } from './webview/lifecycleTab';
 
 export class AnalyticsPanel {
   public static currentPanel: AnalyticsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private readonly collector: AnalyticsCollector;
   private readonly graphCollector: GraphDataCollector;
+  private readonly lifecycleCollector: LifecycleCollector;
+  /** Last result of the Lifecycle collection, as the tab shows it. */
+  private lifecycleResult: LifecycleResult = { kind: 'none' };
+  /** Model behind the last result: the host checks every Lifecycle message against it. */
+  private lifecycle: LifecycleModel | null = null;
   private disposables: vscode.Disposable[] = [];
 
   private constructor(panel: vscode.WebviewPanel) {
     this.panel = panel;
     this.collector = new AnalyticsCollector();
     this.graphCollector = new GraphDataCollector();
+    this.lifecycleCollector = new LifecycleCollector();
 
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage(
@@ -43,9 +52,30 @@ export class AnalyticsPanel {
     try {
       const analytics = await this.collector.collectGlobal(wf.uri);
       const graphData = await this.graphCollector.collect(wf.uri);
+      await this.collectLifecycle(wf.uri, intentFilter);
       this.panel.webview.html = this.buildPage(analytics, graphData, intentFilter);
     } catch (e) {
       this.panel.webview.html = `<body style="padding:24px;color:#ccc">Error: ${e instanceof Error ? e.message : e}</body>`;
+    }
+  }
+
+  /** Own try block: a fault stays in the Lifecycle tab (its unreadable state), the other tabs still render. */
+  private async collectLifecycle(workspaceUri: vscode.Uri, intentFilter?: string): Promise<void> {
+    try {
+      this.lifecycleResult = await this.lifecycleCollector.collectResult(workspaceUri, intentFilter);
+    } catch {
+      this.lifecycleResult = { kind: 'unreadable', reason: 'lifecycle data could not be read' };
+    }
+    this.lifecycle = this.lifecycleResult.kind === 'ok' ? this.lifecycleResult.model : null;
+  }
+
+  /** The tab's markup; a rendering fault also stays in the tab. */
+  private lifecyclePane(): string {
+    try {
+      return renderLifecycleTab(this.lifecycleResult);
+    } catch {
+      this.lifecycle = null;
+      return renderLifecycleTab({ kind: 'unreadable', reason: 'lifecycle data could not be shown' });
     }
   }
 
@@ -53,6 +83,21 @@ export class AnalyticsPanel {
     if (msg.command === 'openIntent' && msg.intentDir) { this.refresh(msg.intentDir); }
     else if (msg.command === 'showOverview') { this.refresh(); }
     else if (msg.command === 'refresh') { this.refresh(); }
+    else if (typeof msg.command === 'string' && msg.command.startsWith('lifecycle')) { this.handleLifecycleMessage(msg); }
+  }
+
+  /** Lifecycle tab messages: three commands, each argument checked against the last model. */
+  private handleLifecycleMessage(msg: unknown): void {
+    const action = lifecycleActionFor(this.lifecycle, msg);
+    const wf = vscode.workspace.workspaceFolders?.[0];
+    if (!action || !wf) { return; }
+    if (action.kind === 'open') {
+      void vscode.commands.executeCommand('vscode.open', vscode.Uri.joinPath(wf.uri, ...action.path.split('/')));
+    } else if (action.kind === 'approve') {
+      void vscode.commands.executeCommand('amadeus-aidlc.approveStage', action.stage);
+    } else {
+      void vscode.commands.executeCommand('amadeus-aidlc.requestChanges', action.stage);
+    }
   }
 
   private dispose(): void {
@@ -70,7 +115,7 @@ export class AnalyticsPanel {
 
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<style>${this.css()}</style></head><body>
+<style>${this.css()}${LIFECYCLE_CSS}</style></head><body>
 <script>const vscode=acquireVsCodeApi();const GRAPH_DATA=${graphJson};
 function showTopTab(id){
   document.querySelectorAll('.top-tab').forEach(function(t){t.classList.remove('active')});
@@ -89,12 +134,14 @@ function showTopTab(id){
   <div class="top-tab active" id="tt-overview" onclick="showTopTab('overview')">
     ${intent ? '← Overview' : 'Overview'}
   </div>
+  <div class="top-tab" id="tt-lifecycle" onclick="showTopTab('lifecycle')">Lifecycle</div>
   <div class="top-tab" id="tt-graph" onclick="showTopTab('graph')">Dependency Graph</div>
   <div class="top-tab" id="tt-timeline" onclick="showTopTab('timeline')">Timeline</div>
   <div class="top-tab" id="tt-agents" onclick="showTopTab('agents')">Agents</div>
 </div>
 
 <div class="top-content active" id="tc-overview">${overviewHtml}</div>
+<div class="top-content" id="tc-lifecycle">${this.lifecyclePane()}</div>
 <div class="top-content" id="tc-graph">
   <div id="graph-container">
     <div class="graph-toolbar">
