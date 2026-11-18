@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Overview** sidebar view, after System. It groups what needs attention (open
+  gates, rework, knowledge problems, a brownfield workspace with no code map),
+  the active intent's lifecycle, and the AI pod: intents running, open gates in
+  the space, code maps, and the Knowledge percentage. Read-only. (#13)
+- **Pod Brain** tab in the Analytics dashboard: the health of the space's AI-DLC
+  DocumentKB catalog, with each document's extraction state, the framework's
+  remedy, scope, tags and summary state. It reads only the catalog's
+  `index.json`, never the extracted text, and refuses an index the framework
+  itself would refuse. (#13)
+
 ### Changed
 
 - Open-source readiness: rewrote `README.md`, added `CODE_OF_CONDUCT.md`,
