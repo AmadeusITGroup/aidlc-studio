@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { AnalyticsCollector, GlobalAnalytics, IntentAnalytics } from '../services/analyticsCollector';
 import { GraphDataCollector, GraphData } from '../services/graphDataCollector';
+import { KbHealth, readKbHealth } from '../services/documentKbReader';
+import { POD_BRAIN_ACTION, POD_BRAIN_CSS, renderPodBrainTab } from './webview/podBrainTab';
 
 export class AnalyticsPanel {
   public static currentPanel: AnalyticsPanel | undefined;
@@ -43,7 +45,8 @@ export class AnalyticsPanel {
     try {
       const analytics = await this.collector.collectGlobal(wf.uri);
       const graphData = await this.graphCollector.collect(wf.uri);
-      this.panel.webview.html = this.buildPage(analytics, graphData, intentFilter);
+      const kb = await readKbHealth(wf.uri);
+      this.panel.webview.html = this.buildPage(analytics, graphData, kb, intentFilter);
     } catch (e) {
       this.panel.webview.html = `<body style="padding:24px;color:#ccc">Error: ${e instanceof Error ? e.message : e}</body>`;
     }
@@ -53,6 +56,7 @@ export class AnalyticsPanel {
     if (msg.command === 'openIntent' && msg.intentDir) { this.refresh(msg.intentDir); }
     else if (msg.command === 'showOverview') { this.refresh(); }
     else if (msg.command === 'refresh') { this.refresh(); }
+    else if (msg.command === POD_BRAIN_ACTION) { void vscode.commands.executeCommand('amadeus-aidlc.knowledge'); }
   }
 
   private dispose(): void {
@@ -63,7 +67,7 @@ export class AnalyticsPanel {
 
   // ──────────────────── Page Builder ────────────────────
 
-  private buildPage(data: GlobalAnalytics, graphData: GraphData | null, intentFilter?: string): string {
+  private buildPage(data: GlobalAnalytics, graphData: GraphData | null, kb: KbHealth, intentFilter?: string): string {
     const intent = intentFilter ? data.intents.find((i) => i.dirName === intentFilter) : null;
     const overviewHtml = intent ? this.intentDetailContent(intent) : this.overviewContent(data);
     const graphJson = graphData ? JSON.stringify(graphData) : 'null';
@@ -92,6 +96,7 @@ function showTopTab(id){
   <div class="top-tab" id="tt-graph" onclick="showTopTab('graph')">Dependency Graph</div>
   <div class="top-tab" id="tt-timeline" onclick="showTopTab('timeline')">Timeline</div>
   <div class="top-tab" id="tt-agents" onclick="showTopTab('agents')">Agents</div>
+  <div class="top-tab" id="tt-podbrain" onclick="showTopTab('podbrain')">Pod Brain</div>
 </div>
 
 <div class="top-content active" id="tc-overview">${overviewHtml}</div>
@@ -116,6 +121,7 @@ function showTopTab(id){
 </div>
 <div class="top-content" id="tc-timeline">${this.timelineContent(graphData)}</div>
 <div class="top-content" id="tc-agents">${this.agentContent(graphData)}</div>
+<div class="top-content" id="tc-podbrain">${renderPodBrainTab(kb)}</div>
 
 <script>${this.graphScript()}</script>
 </body></html>`;
@@ -830,6 +836,6 @@ td{padding:8px 10px;border-bottom:1px solid var(--vscode-editorWidget-border,#2a
 .handoff-arrow{color:#555;font-size:13px}
 
 @media(max-width:600px){.cards{flex-direction:column}.details-grid{grid-template-columns:1fr 1fr}.agent-grid{grid-template-columns:1fr}}
-`;
+${POD_BRAIN_CSS}`;
   }
 }

@@ -60,6 +60,7 @@ Then press `F5` to launch the Extension Development Host.
 | View | Purpose |
 |------|---------|
 | **System** | Setup, bun, Health, AIDLC Version, Extension version, Analytics, Documentation — each is click-to-act |
+| **Overview** | What needs attention (gates, rework, knowledge problems), the active intent's lifecycle, and the AI pod: intents running, open gates, code maps, Knowledge % |
 | **Workflow Progress** | Intent, scope, depth, current phase/stage, progress bar, lead agent |
 | **Stages** | All stages by phase with live status icons and inline approve/skip actions |
 | **Artifacts** | Generated files on disk, reviewable vs framework-internal, with approval status |
@@ -73,8 +74,9 @@ Open from the **System → Analytics** row. Tabs:
 - **Dependency Graph** — interactive force-directed graph of stage dependencies (drag, hover, explore)
 - **Timeline** — Gantt chart of stage execution on a real time axis, colored by agent
 - **Agents** — time per agent and the agent-handoff sequence
+- **Pod Brain** — health of the space's DocumentKB: one row per document with its extraction state and remedy, scope, tags, and summary state
 
-All data comes from the framework's `runtime-graph.json`, `stage-graph.json`, and `aidlc-state.md`.
+All data comes from the framework's `runtime-graph.json`, `stage-graph.json`, and `aidlc-state.md`. The Pod Brain tab reads the DocumentKB catalog, `knowledge/documentkb/index.json`.
 
 ## Configuration
 
