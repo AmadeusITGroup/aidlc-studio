@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "plugin": "amadeus",
+  "knowledge": [
+    "aidlc-architect-agent/repo-evidence-gathering.md",
+    "aidlc-pipeline-deploy-agent/amadeus-cicd-toolchain.md",
+    "aidlc-product-agent/intent-source-ingestion.md",
+    "aidlc-product-agent/repo-landscape-search.md",
+    "aidlc-shared/amadeus-platform-peer.md",
+    "aidlc-shared/confluence-mcp.md",
+    "aidlc-shared/mcp-integration.md",
+    "aidlc-shared/okf-knowledge-ingestion.md",
+    "aidlc-shared/repo-remote-evidence.md",
+    "amadeus-platform-agent/cost-and-resource-optimization.md",
+    "amadeus-platform-agent/environment-strategy.md",
+    "amadeus-platform-agent/infrastructure-as-code-patterns.md",
+    "amadeus-platform-agent/methodology.md",
+    "amadeus-platform-agent/platform-catalogue.md",
+    "amadeus-platform-agent/security-zones.md"
+  ]
+}

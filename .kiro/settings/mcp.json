@@ -1,0 +1,53 @@
+{
+  "mcpServers": {
+    "octane": {
+      "type": "http",
+      "url": "https://azrnelnx00824.rnd.amadeus.net/mcp",
+      "disabled": true,
+      "autoApprove": [
+        "octane_ping",
+        "octane_get_active_scope",
+        "octane_set_active_scope",
+        "octane_check_workspace_access",
+        "octane_sso_login",
+        "octane_sso_login_complete",
+        "octane_find_by_name",
+        "octane_get_all_linked_tests",
+        "octane_create_manual_test",
+        "octane_create_gherkin_test",
+        "octane_link_test_to_work_item"
+      ]
+    },
+    "mcp-gateway": {
+      "url": "https://gateway.mcp.global.amadeus.net/mcp",
+      "headers": {
+        "x-jira-token": "Token ${JIRA_PAT}"
+      },
+      "disabled": true,
+      "autoApprove": [
+        "atlassian_atlassianUserInfo",
+        "atlassian_getConfluencePage",
+        "jira_get_current_user",
+        "jira_get_issue",
+        "github_get_me",
+        "github_get_file_contents",
+        "github_search_code",
+        "github_search_repositories",
+        "github_list_commits",
+        "github_list_issues",
+        "github_issue_read",
+        "github_list_pull_requests",
+        "github_pull_request_read",
+        "sonar_search_my_sonarqube_projects",
+        "sonar_search_sonar_issues_in_projects",
+        "sonar_show_rule",
+        "sonar_get_project_quality_gate_status",
+        "sonar_search_security_hotspots",
+        "sonar_get_component_measures",
+        "sonar_search_files_by_coverage",
+        "sonar_list_pull_requests",
+        "sonar_list_branches"
+      ]
+    }
+  }
+}

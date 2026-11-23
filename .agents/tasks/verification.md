@@ -1,92 +1,58 @@
-# Verification — Make AIDLC Studio work in both VS Code and Kiro
+# Verification — variant/channel feature + two-row System version display
 
-## Change summary
+This note records the verification evidence for the variant/channel +
+two-row-System-panel change (PART 1 + PART 2), replacing the prior stale note
+that documented the unrelated welcomePanel / `getExtension` task (review B1).
 
-Removed the two hardcoded `vscode.extensions.getExtension('amadeus.aidlc-studio')`
-self-lookups in `src/views/welcomePanel.ts` and replaced them with
-`vscode.ExtensionContext`-based resolution threaded from `activate()`.
+## Change under test (working tree, uncommitted)
 
-- `WelcomePanel.show()` → `WelcomePanel.show(context: vscode.ExtensionContext)`.
-  Logo webview URI now built from `context.extensionUri`
-  (`asWebviewUri(Uri.joinPath(context.extensionUri, 'resources', 'AIDLC Studio Logo.png'))`).
-- `getVersion()` → `getVersion(context)`, returning
-  `context.extension.packageJSON.version ?? ''`.
-- Both call sites in `src/extension.ts` (the `amadeus-aidlc.openWelcome` command
-  handler and the first-activation `showWelcomeOnStartup` block) now pass `context`.
-- Existing fallbacks preserved: `<img>` logo → `<h1>AIDLC Studio</h1>` when the
-  URI is undefined; version badge omitted when version is empty.
+- `src/services/variants.ts` (modified) — `channel: 'release' | 'preview'` on the
+  `AidlcVariant` type + catalog entries + `custom` overlay; amadeus carries the
+  Artifactory `/cli` feed; new pure `describeVariant()` → `aws` | `amadeus` |
+  `amadeus-preview`.
+- `src/services/ruleLoader.ts` (modified) — `restoreVariant()` priority:
+  on-disk `readAidlcInstall()` (authoritative, reconciles + persists
+  `aidlc.variantId` AND `aidlc.channel`) → persisted state → file heuristic →
+  binary `--version` probe → AWS/release default; capability-based
+  `isWorkspaceConfigured()`; outputChannel optional + `?.`-guarded.
+- `src/services/updateChecker.ts` (modified) — `VersionInfo` gains `channel` +
+  `variantDisplayId`; Amadeus path resolves `latest` ONLY from the Artifactory
+  feed (curl), channel-filtered, never GitHub/git; full-string version compare;
+  on failure → `unknown`.
+- `src/views/systemProvider.ts` (modified) — Row A "Installed CLI" + Row B
+  "Repo configured".
+- `src/extension.ts` (modified) — active-variant log line gains the resolved
+  channel; no `console.*` added.
+- `src/services/repoVersionReader.ts` (new) — pure `parseRepoAidlcVersion` +
+  vscode-fs `readRepoAidlcVersion`; reads `.kiro/tools/aidlc-version.ts` as TEXT,
+  never imports/executes it, never throws.
+- `src/services/repoVersionReader.test.ts` (new) — covers the parser branches.
 
-This makes the welcome page's logo and version badge survive a different
-publisher, side-loading, or alternative packaging — and work identically under
-stock VS Code and Kiro, with no IDE-identity branching.
+`package.json` unchanged (no new command/config key). No `git commit`/`git push`
+performed — all git left to the user.
 
-## Review-iteration fix (addresses CHANGES_REQUESTED on commit 4a76b38)
+## Commands run (from `c:\Github\aidlc-studio`, Windows PowerShell, single-run mode)
 
-The prior commit `4a76b38` entangled the in-scope welcomePanel fix with an
-out-of-scope removal of `ExtensionUpdateChecker`: it dropped the
-`ExtensionUpdateChecker` import, instantiation, the `SystemProvider` 4th
-constructor argument, and the two self-update command registrations from
-`src/extension.ts`, but the matching cleanup to `systemProvider.ts`,
-`package.json`, and the deletion of `extensionUpdateChecker.ts` live only as
-uncommitted working-tree changes belonging to the separate logo/sidebar task.
-The committed tree therefore failed `tsc` with `TS2554` (SystemProvider still
-requires the 4th `ExtensionUpdateChecker` parameter).
+- `npm run compile` (`tsc -p ./`) — **PASS**, exit 0, no TypeScript errors,
+  emits to `out/`.
+- `npm run lint` (`eslint src --ext ts`) — **PASS**, exit 0, **0 errors, 1
+  warning** — the pre-existing baseline `no-console` at `src/extension.ts:37`
+  (`Unexpected console statement`). No new warnings introduced. (A separate
+  informational banner notes the local TypeScript 5.9.3 vs the plugin's
+  officially-supported range; it is not an ESLint finding and predates this
+  change.)
+- `npm run test` (`vitest --run`, one-shot) — **PASS**, **86 passed / 0 failing**
+  across **8 test files**:
+  - `src/services/repoVersionReader.test.ts` — 7 (new)
+  - `src/services/variants.test.ts` — 17
+  - `src/services/variantDetector.test.ts` — 13
+  - `src/services/installCommands.test.ts` — 7
+  - `src/services/aidlcInstallReader.test.ts` — 19
+  - `src/services/updateChecker.test.ts` — 6 (previously RED)
+  - `src/services/ruleLoader.test.ts` — 11 (previously RED)
+  - `src/services/stateParser.test.ts` — 6
 
-Resolution (per review Option B — keep this task scoped to welcomePanel):
-reverted the `ExtensionUpdateChecker` changes in `src/extension.ts` so it again
-constructs `SystemProvider(ruleLoader, updateChecker, bunInstaller,
-extUpdateChecker)` and re-registers `amadeus-aidlc.checkExtensionUpdate` /
-`amadeus-aidlc.updateExtension`. The commit now touches only welcomePanel-scoped
-code and is self-consistent with the committed `systemProvider.ts` (4-param),
-`extensionUpdateChecker.ts` (present), and `package.json` (two commands present).
-
-## Verification method (addresses "evidence must match the commit")
-
-Because the main working tree carries the separate logo/sidebar task's
-uncommitted changes (3-param `systemProvider.ts`, deleted
-`extensionUpdateChecker.ts`), the suites were run against the EXACT committed
-tree in an isolated detached worktree (`git worktree add --detach` at the
-commit, with the scoped `extension.ts` applied), using the main tree's
-`node_modules`. The worktree was removed afterward. This guarantees the evidence
-below reflects the committed state, not the working tree.
-
-## Full-audit result
-
-Grep over `src/**/*.ts` for `getExtension(`, `env.appName`, `env.appHost`,
-`env.uriScheme`, and the literal `amadeus.aidlc-studio`:
-
-- Only self-lookups were the two in `welcomePanel.ts` (now removed/host-agnostic).
-- `WorkspaceDetector.getExtension` is an unrelated private file-extension parser —
-  left untouched.
-- `docsPanel.ts` / `analyticsPanel.ts`: self-contained HTML, no bundled-resource
-  loading, no extension lookup — no change needed.
-- `updateChecker.ts` / `update.ts`: git/curl/GitHub-releases with try/catch
-  graceful degradation; no Marketplace / VS-Code-only update assumption;
-  `openExternal` targets external URLs — left as-is.
-- `bunInstaller.ts` / `shell.ts` / `aidlcCli.ts`: branch only on
-  `process.platform` and read generic env/paths — no IDE-specific assumption,
-  no change.
-- `package.json` `engines.vscode "^1.85.0"`: left as-is (Kiro reports a
-  compatible engine); not raised.
-
-Post-change grep for `vscode.extensions.getExtension` / `amadeus.aidlc-studio`
-in `src/`: **no matches**.
-
-## Commands run against the committed tree (single-run mode)
-
-- `tsc -p ./` (compile) — PASS, exit 0, no TypeScript errors.
-- `eslint src --ext ts` (lint) — PASS, exit 0, 0 errors, 1 warning
-  (pre-existing `no-console` at `src/extension.ts:38`, not introduced here).
-- `vitest --run` (test) — PASS, 14/14 tests across 2 files.
-
-Temp verification worktree cleaned up; no temp files left behind.
-
-## Note on the untracked logo asset (non-blocking review finding)
-
-`resources/AIDLC Studio Logo.png` is produced by the companion logo/sidebar task
-and is untracked here; it is intentionally NOT part of this welcomePanel commit.
-Because `context.extensionUri` is always truthy at runtime, the `<img>` branch
-renders and a missing asset would show a broken image rather than the `<h1>`
-text-brand fallback. This is a sequencing coupling to the companion task (which
-ships the asset), not a logic defect in welcomePanel. Flagged for release
-sequencing; no code change made here.
+The 12 previously-failing cases now pass (6 in `updateChecker.test.ts`, 11 in
+`ruleLoader.test.ts` — the two suites together), and the 7 new
+`repoVersionReader.test.ts` cases pass. No test was weakened or deleted;
+production was changed to satisfy the asserted API.

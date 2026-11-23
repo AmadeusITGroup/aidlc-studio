@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "eve-sdl-gate",
+      "trigger": "PreToolUse",
+      "description": "Hard SDL prerequisite gate (BLOCKING). PreToolUse is the only Kiro trigger whose exit 2 hard-blocks the tool call (stderr goes to the AGENT), so it enforces the SDL prerequisite: bun + eve must be installed and on PATH — eve is mandatory like bun because the git pre-commit SDL scan (eve-sdl-precommit.sh) needs it; if either is missing it blocks with an AGENT DIRECTIVE carrying the exact install steps to show the user. SDL secret/vulnerability scanning itself runs at git pre-commit time, not in this gate. Logic lives in eve-sdl-gate.sh (plain sh, no bun) so the gate still fires when bun itself is missing; zero-cost pass (exit 0) once both are on PATH.",
+      "action": { "type": "command", "command": "sh .kiro/hooks/eve-sdl-gate.sh" }
+    }
+  ]
+}

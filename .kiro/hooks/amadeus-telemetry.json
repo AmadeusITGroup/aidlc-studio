@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "amadeus-telemetry-reconcile",
+      "trigger": "PostToolUse",
+      "matcher": "execute_bash|execute_pwsh|shell",
+      "description": "Amadeus telemetry. After shell tool calls (every AI-DLC engine step, including intent creation, scope changes and gate approvals, runs through the shell) updates each intent's <intent>/amadeus-telemetry/telemetry.json (intent identified, scope used, phase/stage status, timings, error counts and Kiro IDE / Kiro CLI credits) and its readable telemetry.md report, as a delta: only the active intent and intents whose registry entry changed are checked, only audit bytes appended since the last run are read, and files are rewritten only when their values change. Runs through the installed aidlc command, which loads <leaf>/hooks/aidlc-amadeus-telemetry-reconcile.ts. Silent, NON-BLOCKING (always exits 0). Opt out with AMADEUS_TELEMETRY_DISABLE=1.",
+      "action": {
+        "type": "command",
+        "command": "aidlc engine hook amadeus-telemetry-reconcile"
+      }
+    }
+  ]
+}

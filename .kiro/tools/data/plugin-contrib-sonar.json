@@ -1,0 +1,43 @@
+{
+  "build-and-test": {
+    "produces": [
+      "sonar-findings",
+      "sonar-fix-results"
+    ],
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 110,
+        "hash": "0beb4c94"
+      },
+      {
+        "anchor": "after-step:9",
+        "order": 140,
+        "hash": "75c7ac7b"
+      }
+    ]
+  },
+  "code-generation": {
+    "fragments": [
+      {
+        "anchor": "after-step:3",
+        "order": 100,
+        "hash": "3c447552"
+      }
+    ]
+  },
+  "reverse-engineering": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "3627f57e"
+      },
+      {
+        "anchor": "after-step:3",
+        "order": 110,
+        "hash": "cb8f5a50"
+      }
+    ]
+  }
+}

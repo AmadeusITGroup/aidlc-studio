@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "eve-sdl-win-precheck",
+      "trigger": "SessionStart",
+      "description": "Windows-only SDL prerequisite check (WARNING, non-blocking). Runs once per session under bun (native on Windows, fires even without a POSIX shell) and, if git is missing / not on PATH on Windows, prints an install directive so the user installs Git for Windows (which supplies both git and the sh/bash the SDL .sh hooks + git pre-commit scan need). Silent no-op on macOS/Linux and when git is present. SessionStart cannot block; the sh eve-sdl-gate still hard-blocks the Windows-with-sh case.",
+      "action": { "type": "command", "command": "bun .kiro/hooks/eve-sdl-win-precheck.ts" }
+    }
+  ]
+}

@@ -6,16 +6,27 @@ import * as vscode from 'vscode';
  * - 'native-installer': run the AWS remote release installer one-liner
  *   (`irm <url> | iex` on Windows, `curl -fsSL <url> | sh` on Unix — verified
  *   checksums, no git/bun needed), then `aidlc config --harness <harness>`.
- * - 'repo-installer': clone the (SSO) repo and run the official one-click
- *   installer script shipped INSIDE the clone (scripts/install-aidlc.ps1 on
- *   Windows, scripts/install-aidlc.sh on Unix) with the workspace as target
- *   and the resolved harness (Amadeus fork).
+ * - 'amadeus-cli': Amadeus 2.10+ CLI-driven model (see the official README,
+ *   .kiro/steering/studio-amadeus-installer-readme.md). The OFFICIAL machine
+ *   installer is launched in an interactive terminal (it installs Git, Bun,
+ *   the `aidlc` CLI, Python and EVE), then `aidlc config --harness <harness>`
+ *   configures the project. Replaces the old 'repo-installer' path, which
+ *   assumed the retired 2.5 dist/<harness>/ repo layout. No clone/dist
+ *   fallback exists for this method.
+ * - 'repo-installer': LEGACY (2.5). Clone the repo and run the shipped
+ *   one-click installer with -Target/-Harness, falling back to copying
+ *   dist/<harness>/. Retained ONLY for completeness; no catalog variant uses
+ *   it on 2.10+.
  * - 'git-clone-copy': git clone the repo and copy dist/<harness>/ into the
  *   workspace (legacy manual-copy fallback and custom forks).
  * The harness is chosen by the host IDE and clamped to the variant's
  * supported set via resolveHarness() (see below).
  */
-export type InstallMethod = 'native-installer' | 'repo-installer' | 'git-clone-copy';
+export type InstallMethod =
+  | 'native-installer'
+  | 'amadeus-cli'
+  | 'repo-installer'
+  | 'git-clone-copy';
 
 /**
  * Which doctor command verifies this variant's install, per each variant's
@@ -33,8 +44,8 @@ export type DoctorMode = 'native' | 'bun-tool';
  * is projected into. The two upstreams differ in what they support:
  * - AWS (awslabs/aidlc-workflows): claude, kiro, kiro-ide, codex, cursor,
  *   opencode, copilot. We use kiro-ide (Kiro) and copilot (VS Code).
- * - Amadeus (Amadeus-xDLC/amadeus-aidlc): Kiro only — kiro-ide and kiro
- *   (Kiro CLI). VS Code / copilot is on its roadmap, not available today.
+ * - Amadeus (Amadeus-xDLC/amadeus-aidlc 2.10): kiro-ide (Kiro IDE), kiro
+ *   (Kiro CLI) and copilot (GitHub Copilot in VS Code).
  */
 export type AidlcHarness = 'kiro-ide' | 'kiro' | 'copilot';
 
@@ -78,14 +89,31 @@ export const AIDLC_VARIANTS: AidlcVariant[] = [
   {
     id: 'amadeus',
     label: 'Amadeus AIDLC',
-    description: "Amadeus's internal fork — official one-click installer (requires access)",
-    installMethod: 'repo-installer',
-    doctorMode: 'bun-tool',
+    description: "Amadeus's internal fork — official CLI installer (requires access)",
+    // Amadeus 2.10+ is CLI-driven (machine installer -> `aidlc config`), per
+    // the official README. It ships the `aidlc` binary, so `aidlc doctor` is
+    // the doctor command.
+    installMethod: 'amadeus-cli',
+    doctorMode: 'native',
+    // OFFICIAL installer locations (README section 1). Single source of truth
+    // for the terminal command and the network-access probe. (The on-disk
+    // `release-base-url` read for variant detection uses the `/cli` base and
+    // is unrelated to these.)
+    installScriptUrl: {
+      unix:
+        'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.sh',
+      windows:
+        'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.ps1',
+    },
     repoUrl: 'https://github.com/Amadeus-xDLC/amadeus-aidlc',
     branch: 'main',
+    // DEAD under the CLI model: 2.10+ Amadeus ships no dist/ folder. Kept only
+    // to satisfy the shared AidlcVariant shape; the 'amadeus-cli' path never
+    // reads it. (It is still live for the custom 'git-clone-copy' fork path.)
     distPath: 'dist/kiro-ide',
-    // Amadeus is Kiro-only today (kiro-ide + Kiro CLI). No VS Code harness.
-    supportedHarnesses: ['kiro-ide', 'kiro'],
+    // README: kiro-ide (Kiro IDE), kiro (Kiro CLI), copilot (GitHub Copilot
+    // in VS Code). The first entry is the fallback for an unknown host.
+    supportedHarnesses: ['kiro-ide', 'kiro', 'copilot'],
   },
 ];
 
@@ -117,6 +145,24 @@ export function getVariant(variantId: string): AidlcVariant {
   return variant;
 }
 
+/**
+ * Collapse a variant's id into one of the two display states the UI and
+ * version checks share:
+ *  - `aws`     → AWS (or default) variant.
+ *  - `amadeus` → Amadeus (or custom) variant.
+ *
+ * Pure: a single source of truth for the display id, used by both
+ * UpdateChecker (VersionInfo.variantDisplayId) and SystemProvider.
+ */
+export function describeVariant(
+  variant: Pick<AidlcVariant, 'id'>
+): 'aws' | 'amadeus' {
+  if (variant.id === 'aws' || variant.id === DEFAULT_VARIANT_ID) {
+    return 'aws';
+  }
+  return 'amadeus';
+}
+
 export function getDefaultVariant(): AidlcVariant {
   return getVariant(DEFAULT_VARIANT_ID);
 }
@@ -139,8 +185,8 @@ export function detectHostHarness(appName: string = vscode.env.appName): AidlcHa
  * Resolve the harness to actually install for a given variant and host.
  * Uses the host's harness when the variant supports it; otherwise falls back
  * to the variant's default (first supported) harness. This keeps us honest:
- * e.g. Amadeus is Kiro-only, so selecting it in VS Code installs kiro-ide
- * rather than attempting a non-existent copilot harness.
+ * e.g. the custom fork is Kiro-only, so selecting it in VS Code installs
+ * kiro-ide rather than attempting a non-existent copilot harness.
  *
  * Returns the resolved harness plus whether a fallback occurred, so callers
  * can inform the user.

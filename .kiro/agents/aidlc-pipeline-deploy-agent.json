@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
+  "name": "aidlc-pipeline-deploy-agent",
+  "description": "AI-DLC Pipeline & Deploy Agent - delegation target for ensemble stages (CI/CD, deployment pipeline perspective).",
+  "prompt": "file://aidlc-pipeline-deploy-agent.md",
+  "mcpServers": {
+    "mcp-gateway": {
+      "type": "http",
+      "url": "https://gateway.mcp.global.amadeus.net/mcp"
+    }
+  },
+  "tools": [
+    "fs_read",
+    "fs_write",
+    "execute_bash",
+    "thinking",
+    "@mcp-gateway/atlassian_atlassianUserInfo",
+    "@mcp-gateway/atlassian_getConfluencePage",
+    "@mcp-gateway/github_get_me",
+    "@mcp-gateway/github_get_file_contents",
+    "@mcp-gateway/github_search_code",
+    "@mcp-gateway/github_list_commits",
+    "@mcp-gateway/github_list_issues",
+    "@mcp-gateway/github_issue_read",
+    "@mcp-gateway/github_list_pull_requests",
+    "@mcp-gateway/github_pull_request_read"
+  ],
+  "allowedTools": [
+    "fs_read",
+    "thinking",
+    "@mcp-gateway/github_get_me",
+    "@mcp-gateway/github_get_file_contents",
+    "@mcp-gateway/github_search_code",
+    "@mcp-gateway/github_list_commits",
+    "@mcp-gateway/github_list_issues",
+    "@mcp-gateway/github_issue_read",
+    "@mcp-gateway/github_list_pull_requests",
+    "@mcp-gateway/github_pull_request_read"
+  ],
+  "toolsSettings": {
+    "execute_bash": {
+      "allowedCommands": [
+        "bun (run )?[\"']?\\.kiro/tools/[A-Za-z0-9._-]+\\.ts[\"']?( .*)?",
+        "date -u( .*)?",
+        "mktemp( .*)?",
+        "git clone( .*)?",
+        "git( -C [^\\s]+)? (ls-remote|rev-parse|ls-files|log|show|cat-file|for-each-ref|symbolic-ref)( .*)?"
+      ],
+      "deniedCommands": [
+        "([^\\s]*/)?rm( [^\\s]+)* -[A-Za-z]*[rR][A-Za-z]*( .*)?",
+        "([^\\s]*/)?rm( [^\\s]+)* --recursive( .*)?",
+        "([^\\s]*/)?git( -[^\\s]+( (\"[^\"]*\"|'[^']*'|[^\\s]+))?)* push( .*)?"
+      ]
+    },
+    "fs_write": {
+      "allowedPaths": [
+        "aidlc/spaces/**"
+      ]
+    }
+  },
+  "resources": [
+    "file://.kiro/agents/aidlc-pipeline-deploy-agent.md",
+    "file://.kiro/knowledge/aidlc-pipeline-deploy-agent/*.md",
+    "file://.kiro/knowledge/aidlc-shared/*.md",
+    "file://aidlc/spaces/default/memory/**/*.md"
+  ],
+  "hooks": {}
+}

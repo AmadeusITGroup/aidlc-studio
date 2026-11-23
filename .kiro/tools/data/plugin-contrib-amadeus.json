@@ -1,0 +1,188 @@
+{
+  "build-and-test": {
+    "produces": [
+      "amadeus-scm-results"
+    ],
+    "fragments": [
+      {
+        "anchor": "after-step:10",
+        "order": 190,
+        "hash": "b5af05e4"
+      }
+    ]
+  },
+  "ci-pipeline": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "4484aad7"
+      }
+    ]
+  },
+  "nfr-requirements": {
+    "fragments": [
+      {
+        "anchor": "after-step:3",
+        "order": 100,
+        "hash": "31afe6aa"
+      }
+    ]
+  },
+  "feasibility": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "b2033817"
+      },
+      {
+        "anchor": "after-step:2",
+        "order": 110,
+        "hash": "5499eee8"
+      },
+      {
+        "anchor": "after-step:2",
+        "order": 120,
+        "hash": "7a8d34a8"
+      }
+    ]
+  },
+  "intent-capture": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "ec8bfc52"
+      },
+      {
+        "anchor": "after-step:2",
+        "order": 110,
+        "hash": "6e2b76a2"
+      }
+    ]
+  },
+  "market-research": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "8483679c"
+      }
+    ]
+  },
+  "scope-definition": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "516a2d7d"
+      }
+    ]
+  },
+  "team-formation": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "70b5f870"
+      }
+    ]
+  },
+  "delivery-planning": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "2f0013a0"
+      }
+    ]
+  },
+  "practices-discovery": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "5efc32ce"
+      },
+      {
+        "anchor": "after-step:4",
+        "order": 110,
+        "hash": "973db75e"
+      }
+    ]
+  },
+  "refined-mockups": {
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "c987673c"
+      },
+      {
+        "anchor": "after-step:4",
+        "order": 110,
+        "hash": "1fd82070"
+      }
+    ]
+  },
+  "requirements-analysis": {
+    "fragments": [
+      {
+        "anchor": "after-step:6",
+        "order": 100,
+        "hash": "f6af6455"
+      }
+    ]
+  },
+  "reverse-engineering": {
+    "fragments": [
+      {
+        "anchor": "after-step:1",
+        "order": 100,
+        "hash": "127e9882"
+      },
+      {
+        "anchor": "after-step:2",
+        "order": 108,
+        "hash": "f5981858"
+      }
+    ]
+  },
+  "user-stories": {
+    "fragments": [
+      {
+        "anchor": "after-step:10",
+        "order": 100,
+        "hash": "aac9a4bb"
+      }
+    ]
+  },
+  "environment-provisioning": {
+    "fragments": [
+      {
+        "anchor": "after-step:3",
+        "order": 100,
+        "hash": "76162a39"
+      }
+    ]
+  },
+  "feedback-optimization": {
+    "fragments": [
+      {
+        "anchor": "after-step:3",
+        "order": 100,
+        "hash": "420690ff"
+      }
+    ]
+  },
+  "incident-response": {
+    "fragments": [
+      {
+        "anchor": "after-step:3",
+        "order": 100,
+        "hash": "60c4286c"
+      }
+    ]
+  }
+}

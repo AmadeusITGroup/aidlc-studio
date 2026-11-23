@@ -1,0 +1,112 @@
+{
+  "plugin": "amadeus",
+  "version": 1,
+  "appliedAt": "2026-10-23T06:38:21.064Z",
+  "last_stage": "build-and-test",
+  "scopes": [
+    "bugfix",
+    "classic",
+    "express",
+    "feature"
+  ],
+  "stages": [
+    {
+      "slug": "ci-pipeline",
+      "file": ".kiro/aidlc-common/stages/construction/ci-pipeline.md",
+      "removed": [
+        "feature"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - mvp\n  - infra\n  - workshop\n",
+      "trimmed": "scopes:\n  - enterprise\n  - mvp\n  - infra\n  - workshop\n",
+      "preHash": "3adb07628a9bf503d5314f3466cf880b426a7c0177a69d6b386b366249a322dc",
+      "postHash": "f6ffbf9ea66d5195e503b5da3ec1813ec56e0a66ac6a3cd9d55ad488bed32b66"
+    },
+    {
+      "slug": "deployment-execution",
+      "file": ".kiro/aidlc-common/stages/operation/deployment-execution.md",
+      "removed": [
+        "feature",
+        "bugfix",
+        "express"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - infra\n  - bugfix\n  - refactor\n  - security-patch\n  - workshop\n  - express\n",
+      "trimmed": "scopes:\n  - enterprise\n  - infra\n  - refactor\n  - security-patch\n  - workshop\n",
+      "preHash": "c5df49aa542d0a4d5be4bb2035bef6330c8228aaa0d5237ab66ef715308f0f4c",
+      "postHash": "3b960d93a2ef46c5c4cb162425986bbad4fe4c663ba116b13d372c5ccce5d305"
+    },
+    {
+      "slug": "deployment-pipeline",
+      "file": ".kiro/aidlc-common/stages/operation/deployment-pipeline.md",
+      "removed": [
+        "feature",
+        "bugfix",
+        "express"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - infra\n  - bugfix\n  - refactor\n  - security-patch\n  - workshop\n  - express\n",
+      "trimmed": "scopes:\n  - enterprise\n  - infra\n  - refactor\n  - security-patch\n  - workshop\n",
+      "preHash": "883aa5e0f28456896adf856c0fa4a2a027d4532fb083acbb0b3d812d3ed5268c",
+      "postHash": "b04b0e3b77bc5d353f2e4f9646e9b6e0a64607bc5df75696c77aba2c34994e94"
+    },
+    {
+      "slug": "environment-provisioning",
+      "file": ".kiro/aidlc-common/stages/operation/environment-provisioning.md",
+      "removed": [
+        "feature"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - infra\n  - workshop\n",
+      "trimmed": "scopes:\n  - enterprise\n  - infra\n  - workshop\n",
+      "preHash": "3a428ba1bcf60886a634a1e0ef1cb91ad66730d97fa41dbe0858710cbebe75a6",
+      "postHash": "9aa41f0cae561cb1e92a36e0f533bd5b4a068b7a2e93619149512ab44af2517a"
+    },
+    {
+      "slug": "feedback-optimization",
+      "file": ".kiro/aidlc-common/stages/operation/feedback-optimization.md",
+      "removed": [
+        "feature"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - workshop\n",
+      "trimmed": "scopes:\n  - enterprise\n  - workshop\n",
+      "preHash": "60d63e1a9b956c99c4d7015e6f3901c5cdbbafa37159138bae50b30e7f82860e",
+      "postHash": "24464715144d5e29d222522e49a00db61acc0bf0a36470b2ecc921c0b8634005"
+    },
+    {
+      "slug": "incident-response",
+      "file": ".kiro/aidlc-common/stages/operation/incident-response.md",
+      "removed": [
+        "feature"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - workshop\n",
+      "trimmed": "scopes:\n  - enterprise\n  - workshop\n",
+      "preHash": "56c0d74e8aa0ca624346fed92a389bdbfbaaa5d5f23604c4fc7180959c8a24c4",
+      "postHash": "705d70ae45d58cdece83bc5af0ccabae473bee1d09204fc32c562ba9306d2c2f"
+    },
+    {
+      "slug": "observability-setup",
+      "file": ".kiro/aidlc-common/stages/operation/observability-setup.md",
+      "removed": [
+        "feature",
+        "express"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - infra\n  - workshop\n  - express\n",
+      "trimmed": "scopes:\n  - enterprise\n  - infra\n  - workshop\n",
+      "preHash": "5efd8cca3b1aa2ae6353099a7cda0e334fa7ebb9b7a642310a36b75a929f67f3",
+      "postHash": "6a2327ca66679dc27bce9506f4b70831bacea5f05d364c1c4f36e0029153903f"
+    },
+    {
+      "slug": "performance-validation",
+      "file": ".kiro/aidlc-common/stages/operation/performance-validation.md",
+      "removed": [
+        "feature"
+      ],
+      "original": "scopes:\n  - enterprise\n  - feature\n  - workshop\n",
+      "trimmed": "scopes:\n  - enterprise\n  - workshop\n",
+      "preHash": "225ed56b755aa3d609d24384545d4aa14d099402ef1c148103992b5b2797f10c",
+      "postHash": "a002c5c8f17e09b5d15a50be7baef0859c98605ed48a6cfb668298feddf5347d"
+    }
+  ],
+  "scopeTable": {
+    "file": ".kiro/skills/aidlc/SKILL.md",
+    "preHash": "b5e5e80114e9f02ebe5dbe090b0def06e5002e7304faa320071cf50a2692b276",
+    "postHash": "671b4daa111df8bc48e36173780c9abcdec12c38a51834b1e19ffda2f8acd5a2"
+  }
+}

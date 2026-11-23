@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   aidlcBinaryCandidates,
+  amadeusInstallNextSteps,
+  amadeusManualInstallHint,
+  buildAccessProbeCommand,
+  buildAmadeusInstallerTerminal,
   buildNativeInstallCommand,
   buildRepoInstallerCommand,
+  doctorReportsInteractiveOnlyPath,
+  reportsConfigConflict,
 } from './installCommands';
 
 describe('buildNativeInstallCommand', () => {
@@ -72,7 +78,94 @@ describe('aidlcBinaryCandidates', () => {
   });
 });
 
-describe('buildRepoInstallerCommand', () => {
+describe('buildAmadeusInstallerTerminal (README section 1)', () => {
+  const urls = {
+    unix: 'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.sh',
+    windows:
+      'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.ps1',
+  };
+
+  it('Windows: PowerShell, download-then-run, exactly the README one-liner', () => {
+    const t = buildAmadeusInstallerTerminal('win32', urls);
+    expect(t.shellPath).toBe('powershell.exe');
+    expect(t.command).toBe(
+      '$f = Join-Path $env:TEMP "install-aidlc.ps1"; ' +
+        `curl.exe -fsSL ${urls.windows} -o $f; ` +
+        'powershell -ExecutionPolicy Bypass -File $f; Remove-Item $f'
+    );
+  });
+
+  it('macOS and Linux: bash with process substitution, exactly the README command', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const t = buildAmadeusInstallerTerminal(platform, urls);
+      expect(t.shellPath).toBe('/bin/bash');
+      expect(t.command).toBe(`bash <(curl -fsSL ${urls.unix})`);
+    }
+  });
+
+  it('never uses irm|iex, -File <url>, curl | sh, skip flags or preview', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const { command } = buildAmadeusInstallerTerminal(platform, urls);
+      expect(command).not.toMatch(/\birm\b|\biex\b|\| sh|-File https?:|skip-|-Skip|preview|-Preview/i);
+    }
+  });
+});
+
+describe('amadeus install messaging', () => {
+  const urls = { unix: 'https://x/install-aidlc.sh', windows: 'https://x/install-aidlc.ps1' };
+
+  it('manual hint embeds the exact command for the OS', () => {
+    expect(amadeusManualInstallHint('win32', urls)).toContain(
+      buildAmadeusInstallerTerminal('win32', urls).command
+    );
+    expect(amadeusManualInstallHint('win32', urls)).toContain('not as administrator');
+    expect(amadeusManualInstallHint('darwin', urls)).toContain('bash <(curl -fsSL https://x/install-aidlc.sh)');
+  });
+
+  it('next steps differ per OS and mention eve credentials + re-running Setup', () => {
+    const win = amadeusInstallNextSteps('win32');
+    expect(win).toContain('quit and reopen');
+    expect(win).toContain('not as administrator');
+    const mac = amadeusInstallNextSteps('darwin');
+    expect(mac).toContain('open a new terminal');
+    expect(amadeusInstallNextSteps('linux')).toContain('open a new terminal');
+    for (const s of [win, mac]) {
+      expect(s).toContain('Setup again');
+      expect(s).toContain('eve credentials amaiisdom <your-username>');
+    }
+  });
+});
+
+describe('buildAccessProbeCommand', () => {
+  it('uses curl.exe on Windows and curl elsewhere, with a short timeout', () => {
+    expect(buildAccessProbeCommand('win32', 'https://h/p')).toBe(
+      'curl.exe -fsS -I --max-time 10 "https://h/p"'
+    );
+    expect(buildAccessProbeCommand('darwin', 'https://h/p')).toBe(
+      'curl -fsS -I --max-time 10 "https://h/p"'
+    );
+    expect(buildAccessProbeCommand('linux', 'https://h/p')).toBe(
+      'curl -fsS -I --max-time 10 "https://h/p"'
+    );
+  });
+});
+
+describe('doctor / config output classifiers', () => {
+  it('detects the interactive-only PATH report', () => {
+    expect(doctorReportsInteractiveOnlyPath('⚠ aidlc is interactive-only (not on the hook PATH)')).toBe(true);
+    expect(doctorReportsInteractiveOnlyPath('aidlc resolves only through the interactive PATH')).toBe(true);
+    expect(doctorReportsInteractiveOnlyPath('✓ all good')).toBe(false);
+    expect(doctorReportsInteractiveOnlyPath(undefined)).toBe(false);
+  });
+
+  it('detects conflict reports', () => {
+    expect(reportsConfigConflict('2 conflicts: .kiro/x edited locally')).toBe(true);
+    expect(reportsConfigConflict('nothing to change')).toBe(false);
+    expect(reportsConfigConflict(undefined)).toBe(false);
+  });
+});
+
+describe('buildRepoInstallerCommand (legacy custom-fork path)', () => {
   it('runs the cloned install-aidlc.ps1 with -File on Windows', () => {
     expect(
       buildRepoInstallerCommand('win32', 'C:\\tmp\\clone\\scripts', 'C:\\ws', 'kiro-ide')

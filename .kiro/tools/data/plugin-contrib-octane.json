@@ -1,0 +1,44 @@
+{
+  "build-and-test": {
+    "produces": [
+      "octane-push-results",
+      "octane-requirement-traceability",
+      "octane-test-cases"
+    ],
+    "sensors": [
+      "octane-format"
+    ],
+    "consumes": [
+      {
+        "artifact": "requirements",
+        "required": false
+      },
+      {
+        "artifact": "stories",
+        "required": false
+      }
+    ],
+    "fragments": [
+      {
+        "anchor": "after-step:2",
+        "order": 100,
+        "hash": "b6ba434f"
+      },
+      {
+        "anchor": "after-step:9",
+        "order": 120,
+        "hash": "f309708c"
+      },
+      {
+        "anchor": "after-step:9",
+        "order": 130,
+        "hash": "4bd488da"
+      },
+      {
+        "anchor": "in:Sensors",
+        "order": 150,
+        "hash": "f2bfbe6b"
+      }
+    ]
+  }
+}

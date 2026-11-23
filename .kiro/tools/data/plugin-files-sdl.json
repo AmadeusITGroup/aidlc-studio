@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "plugin": "sdl",
+  "knowledge": [
+    "aidlc-devsecops-agent/scanner-selection.md"
+  ]
+}

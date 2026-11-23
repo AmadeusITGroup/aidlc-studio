@@ -17,6 +17,7 @@ import { ApprovalCodeLensProvider } from './providers/approvalCodeLensProvider';
 import { StateManager } from './services/stateManager';
 import { RuleLoader } from './services/ruleLoader';
 import { BunInstaller } from './services/bunInstaller';
+import { GitInstaller } from './services/gitInstaller';
 import { UpdateChecker } from './services/updateChecker';
 import { Intent } from './types';
 
@@ -46,22 +47,25 @@ function activateInternal(context: vscode.ExtensionContext): void {
   stateManager = new StateManager(context);
   const ruleLoader = new RuleLoader(context, outputChannel);
   const bunInstaller = new BunInstaller(outputChannel);
+  const gitInstaller = new GitInstaller(outputChannel);
 
   // Restore the variant that was active in the previous session (or auto-detect
   // from workspace files). Must complete before version checks and loadStatus()
   // so all operations target the correct repo from the start.
-  const updateChecker = new UpdateChecker(outputChannel, ruleLoader.variant);
+  const updateChecker = new UpdateChecker(outputChannel, ruleLoader.variant, ruleLoader);
   // Track whether the extension is still active when the async restore finishes.
   let extensionActive = true;
   context.subscriptions.push({ dispose: () => { extensionActive = false; } });
   const variantRestored = ruleLoader.restoreVariant().then((variant) => {
     if (!extensionActive) { return; }
     updateChecker.setVariant(variant);
-    outputChannel.appendLine(`Active variant: ${variant.label} (${variant.installMethod})`);
+    outputChannel.appendLine(
+      `Active variant: ${variant.label} (${variant.installMethod})`
+    );
   });
 
   // Initialize tree view providers
-  const systemProvider = new SystemProvider(ruleLoader, updateChecker, bunInstaller);
+  const systemProvider = new SystemProvider(ruleLoader, updateChecker, bunInstaller, gitInstaller);
   const workflowProgressProvider = new WorkflowProgressProvider(stateManager);
   const stagesProvider = new StagesProvider(stateManager);
   const artifactsProvider = new ArtifactsProvider(stateManager);
@@ -115,7 +119,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
   // Used after setup/install/update so the System panel reflects reality.
   // Forces a fresh version check (bypasses cache) so the version is current.
   // Also syncs the active variant into updateChecker so version checks target
-  // the correct repo/channel for whichever variant was just installed.
+  // the correct repo for whichever variant was just installed.
   const reloadStatusAndViews = async () => {
     updateChecker.setVariant(ruleLoader.variant);
     await systemProvider.loadStatus(true);
@@ -125,7 +129,7 @@ function activateInternal(context: vscode.ExtensionContext): void {
   // Register commands
   const setupCmd = new SetupCommand(ruleLoader, outputChannel, reloadStatusAndViews);
   const doctorCmd = new DoctorCommand(outputChannel);
-  const updateCmd = new UpdateCommand(updateChecker, outputChannel);
+  const updateCmd = new UpdateCommand(updateChecker, outputChannel, ruleLoader);
   const startCmd = new StartWorkflowCommand(stateManager, outputChannel);
   const resumeCmd = new ResumeWorkflowCommand(stateManager, outputChannel);
   const switchCmd = new SwitchIntentCommand(stateManager, outputChannel);
@@ -145,8 +149,20 @@ function activateInternal(context: vscode.ExtensionContext): void {
       await reloadStatusAndViews();
     }),
 
-    // Update
+    // git install
+    vscode.commands.registerCommand('amadeus-aidlc.installGit', async () => {
+      await gitInstaller.install();
+      await reloadStatusAndViews();
+    }),
+
+    // Update — TWO independent operations plus the legacy combined alias.
+    // checkForUpdates = CLI-update availability check (Installed CLI row).
+    // updateCli       = upgrade the machine-wide `aidlc` binary (`aidlc update`).
+    // updateWorkspace = re-apply the installed CLI into this project (`aidlc config`).
+    // updateRules     = legacy combined alias: CLI first, THEN workspace.
     vscode.commands.registerCommand('amadeus-aidlc.checkForUpdates', () => updateCmd.checkForUpdates()),
+    vscode.commands.registerCommand('amadeus-aidlc.updateCli', () => updateCmd.updateCli()),
+    vscode.commands.registerCommand('amadeus-aidlc.updateWorkspace', () => updateCmd.updateWorkspace()),
     vscode.commands.registerCommand('amadeus-aidlc.updateRules', () => updateCmd.updateRules()),
 
     // Workflow lifecycle
@@ -286,18 +302,17 @@ function activateInternal(context: vscode.ExtensionContext): void {
           const detail = [
             `Current: ${info.currentVersion ?? '?'}`,
             `Latest: ${info.latestVersion}`,
-            info.releaseName ? `\n${info.releaseName}` : '',
           ].filter(Boolean).join('\n');
 
           vscode.window.showInformationMessage(
-            `AIDLC update available: ${info.currentVersion ?? '?'} → ${info.latestVersion}`,
+            `AIDLC CLI update available: ${info.currentVersion ?? '?'} → ${info.latestVersion}`,
             { detail },
-            'Update Now',
+            'Update CLI Now',
             'View Details',
             'Later'
           ).then((action) => {
-            if (action === 'Update Now') {
-              vscode.commands.executeCommand('amadeus-aidlc.updateRules');
+            if (action === 'Update CLI Now') {
+              vscode.commands.executeCommand('amadeus-aidlc.updateCli');
             } else if (action === 'View Details') {
               vscode.commands.executeCommand('amadeus-aidlc.checkForUpdates');
             }

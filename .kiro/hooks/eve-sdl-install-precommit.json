@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "eve-sdl-install-precommit",
+      "trigger": "SessionStart",
+      "description": "Auto-installs the AI-DLC SDL git pre-commit hook into this project at session start, so the user never has to copy or install it. Delegates to eve-sdl-install-precommit.sh (plain sh, no bun), which wires a thin pre-commit wrapper into the repo's git hooks dir (honouring core.hooksPath) that execs the shipped .kiro/hooks/eve-sdl-precommit.sh scanner. IDEMPOTENT and NON-DESTRUCTIVE: a no-op once installed, never overwrites a foreign pre-commit hook, and makes NO git config changes. Set AIDLC_SDL_NO_PRECOMMIT_INSTALL=1 to opt out. SessionStart cannot block; always exits 0.",
+      "action": { "type": "command", "command": "sh .kiro/hooks/eve-sdl-install-precommit.sh" }
+    }
+  ]
+}

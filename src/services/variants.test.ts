@@ -37,10 +37,24 @@ describe('variants catalog', () => {
     expect(aws?.installScriptUrl?.windows).toMatch(/install\.ps1$/);
   });
 
-  it('amadeus uses the official repo-installer with the bun-tool doctor', () => {
+  it('amadeus uses the CLI-driven installer (2.10+) with the native doctor', () => {
     const amadeus = AIDLC_VARIANTS.find((v) => v.id === 'amadeus');
-    expect(amadeus?.installMethod).toBe('repo-installer');
-    expect(amadeus?.doctorMode).toBe('bun-tool');
+    // 2.10+ Amadeus is CLI-driven (machine installer -> `aidlc config`), not
+    // the retired clone-and-copy-dist flow.
+    expect(amadeus?.installMethod).toBe('amadeus-cli');
+    expect(amadeus?.doctorMode).toBe('native');
+    // The machine-installer location is configured (the single SSO-gated value).
+    // Official README section 1 locations (`/scripts/`, not `/cli/`).
+    expect(amadeus?.installScriptUrl?.windows).toBe(
+      'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.ps1'
+    );
+    expect(amadeus?.installScriptUrl?.unix).toBe(
+      'https://repository.rnd.amadeus.net/artifactory/generic-prod-aidlc-nce/amadeus-aidlc/scripts/install-aidlc.sh'
+    );
+    expect(amadeus?.supportedHarnesses).toEqual(['kiro-ide', 'kiro', 'copilot']);
+    // The version CHECK is now CLI-first (`aidlc update --check`) for both
+    // variants, so there is no longer an Artifactory feed field on the variant.
+    expect((amadeus as unknown as { artifactory?: unknown }).artifactory).toBeUndefined();
     expect(amadeus?.repoUrl).toMatch(/^https?:\/\//);
   });
 });
@@ -116,12 +130,14 @@ describe('resolveHarness', () => {
     expect(resolveHarness(amadeus, 'Kiro')).toEqual({ harness: 'kiro-ide', fellBack: false });
   });
 
-  it('Amadeus in VS Code falls back to kiro-ide (no copilot harness)', () => {
-    // Amadeus is Kiro-only; VS Code has no supported harness, so it falls back.
-    expect(resolveHarness(amadeus, 'Visual Studio Code')).toEqual({ harness: 'kiro-ide', fellBack: true });
+  it('Amadeus in VS Code installs copilot (supported per the README, no fallback)', () => {
+    expect(resolveHarness(amadeus, 'Visual Studio Code')).toEqual({ harness: 'copilot', fellBack: false });
   });
 
-  it('falls back to the first supported harness for an unknown host', () => {
-    expect(resolveHarness(amadeus, 'Some Other Editor')).toEqual({ harness: 'kiro-ide', fellBack: true });
+  it('a Kiro-only variant (custom fork) falls back to kiro-ide in VS Code', () => {
+    rulesSource = 'https://example.com/my/aidlc-fork';
+    const custom = getVariant('amadeus');
+    expect(resolveHarness(custom, 'Visual Studio Code')).toEqual({ harness: 'kiro-ide', fellBack: true });
+    expect(resolveHarness(custom, 'Some Other Editor')).toEqual({ harness: 'kiro-ide', fellBack: true });
   });
 });

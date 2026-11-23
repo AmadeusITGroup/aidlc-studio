@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "amadeus-audit-reconcile",
+      "trigger": "PostToolUse",
+      "matcher": "execute_bash|execute_pwsh|shell",
+      "description": "Amadeus additive actor stamping for gate approvals. After shell tool calls (the conductor runs `aidlc … approve`, which emits the core GATE_APPROVED audit row) reconciles the plugin actor ledger (audit/amadeus/gate-actor.jsonl) against the canonical GATE_APPROVED rows and regenerates the human digest audit/amadeus/audit-trail.md. Runs through the installed aidlc command, which loads <leaf>/hooks/aidlc-amadeus-audit-reconcile.ts. Level-triggered, idempotent, NON-BLOCKING (always exits 0). The AI-DLC audit trail itself is AWS core; this adds only the approver attribution core omits.",
+      "action": {
+        "type": "command",
+        "command": "aidlc engine hook amadeus-audit-reconcile"
+      }
+    }
+  ]
+}

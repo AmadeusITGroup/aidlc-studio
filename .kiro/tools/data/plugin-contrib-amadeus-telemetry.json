@@ -1,0 +1,12 @@
+{
+  "build-and-test": {
+    "sensors": [
+      "amadeus-telemetry"
+    ]
+  },
+  "requirements-analysis": {
+    "sensors": [
+      "amadeus-telemetry"
+    ]
+  }
+}
