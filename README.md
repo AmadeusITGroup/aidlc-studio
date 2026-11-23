@@ -70,11 +70,12 @@ Then press `F5` to launch the Extension Development Host.
 Open from the **System → Analytics** row. Tabs:
 
 - **Overview** — all intents, scope distribution, progress; click an intent to drill in
+- **Lifecycle** — the active intent's progress, current stage, gates waiting for approval, stages by phase, and per-unit stage status
 - **Dependency Graph** — interactive force-directed graph of stage dependencies (drag, hover, explore)
 - **Timeline** — Gantt chart of stage execution on a real time axis, colored by agent
 - **Agents** — time per agent and the agent-handoff sequence
 
-All data comes from the framework's `runtime-graph.json`, `stage-graph.json`, and `aidlc-state.md`.
+All data comes from the framework's `runtime-graph.json`, `stage-graph.json`, and `aidlc-state.md`; the Lifecycle tab also reads the intent's unit dependency document.
 
 ## Configuration
 

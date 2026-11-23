@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Lifecycle tab in the Analytics dashboard: progress, the stage running now,
+  the gates waiting for approval, stages by phase, and a units × per-unit-stages
+  matrix. Read-only; the approval buttons copy the answer for the chat. (#12)
+
 ### Changed
 
 - Open-source readiness: rewrote `README.md`, added `CODE_OF_CONDUCT.md`,

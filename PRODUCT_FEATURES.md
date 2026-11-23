@@ -90,6 +90,7 @@ AIDLC Studio is a Kiro and VS code extension that makes the AI-Driven Developmen
   ```
 - Shows overall completion percentage across all phases
 - Indicates which agent is leading the next stage
+- The Analytics dashboard's **Lifecycle** tab shows the active intent's progress, the stage running now, the gates waiting for approval, stages by phase, and per-unit stage status. It is read-only: its approval buttons copy the answer for the chat
 
 **User Stories:**
 - As a developer, I want to see my progress at a glance so I stay motivated and oriented
